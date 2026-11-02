@@ -896,7 +896,14 @@ async function runTurnDriver(
 	// even when the stream stalled mid-text. Emitting only when nothing had been
 	// streamed discarded the recovered answer in its commonest case.
 	if (outcome.response) {
-		const streamed = blocks.textIdx === null ? "" : textAt(blocks.partial, blocks.textIdx).text;
+		// Sum EVERY text block, not just the open one: a thought block closes the
+		// text block (textIdx -> null) while its text stays on screen, so reading
+		// only the open block would treat an already-streamed fragment as
+		// "nothing streamed" and emit the recovered answer a second time.
+		const streamed = blocks.partial.content
+			.filter((b): b is { type: "text"; text: string } => b.type === "text")
+			.map((b) => b.text)
+			.join("");
 		if (outcome.response !== streamed) {
 			if (outcome.response.startsWith(streamed)) {
 				const missing = outcome.response.slice(streamed.length);

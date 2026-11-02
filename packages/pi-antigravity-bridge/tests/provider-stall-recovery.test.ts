@@ -178,6 +178,28 @@ test("S1 stall recovery: divergent recovered answer keeps the fragment and adds 
 	assert.ok(texts.includes("the full recovered answer"), "the recovered answer must not be dropped");
 });
 
+test("S1c stall recovery: a thought block between fragment and recovery does not duplicate it", async () => {
+	const { driver } = scriptedDriver([
+		{
+			activities: [
+				{ type: "text", delta: "Paris is the cap" },
+				// A thought closes the text block, so the open-block index is null
+				// while the fragment is still on screen.
+				{ type: "thought", delta: "considering the rest" },
+			],
+			outcome: { status: "OK", response: "Paris is the capital of France.", finished: true, aborted: false },
+		},
+	]);
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
+		store: new SessionStore(tmpStorePath()),
+		driver,
+		roundTrips: idleRoundTrips(),
+	});
+	const { message } = await drain(streamSimple(model, userTurn("capital?"), options));
+	assert.equal(textOf(message), "Paris is the capital of France.", "the streamed fragment must not be duplicated");
+});
+
 test("S2 late strand: turn stays on the current conversation and the binding survives", async () => {
 	// A stranded result that belongs to the PREVIOUS conversation.
 	const rt = new ToolRoundTrips(parkingDriver(), undefined, { escalateAfterMs: 1 });
