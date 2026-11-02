@@ -24,7 +24,7 @@
 import { randomUUID } from "node:crypto";
 import type { UsageEstimate } from "../config.js";
 import { AcpConnection, resolveAcpBinary, type AcpMcpServer, type AcpPermissionRequest } from "./connection.js";
-import type { AcpPermissionHandler } from "./connection.js";
+import type { AcpPermissionContext, AcpPermissionHandler } from "./connection.js";
 import { mapStopReason, mapUpdate, TextAccumulator, type AcpEditDiff } from "./events.js";
 import { estimateTokens, synthesizeUsage } from "./usage-estimate.js";
 import type {
@@ -185,7 +185,7 @@ export class AcpDriver implements TurnDriver {
 	 *  The finally unparks the CAPTURED turn, never whatever is active at
 	 *  exit: the turn can close mid-dialog (abort, server death) and a new
 	 *  turn must not inherit this park's accounting. */
-	async #parkForPermission(req: AcpPermissionRequest): Promise<string | null | undefined> {
+	async #parkForPermission(req: AcpPermissionRequest, ctx: AcpPermissionContext): Promise<string | null | undefined> {
 		const t = this.#active;
 		const parked = t !== undefined && !t.closed;
 		if (parked) {
@@ -193,8 +193,8 @@ export class AcpDriver implements TurnDriver {
 			this.#clearIdle(t);
 			this.#pauseOverall(t);
 		}
-		try {
-			return await this.#opts.onPermissionRequest!(req);
+			try {
+			return await this.#opts.onPermissionRequest!(req, ctx);
 		} finally {
 			if (parked && !t.closed && t.parks > 0) {
 				t.parks -= 1;
@@ -525,7 +525,7 @@ export class AcpDriver implements TurnDriver {
 					? "auto"
 					: (this.#opts.permissionPolicy?.() ?? "deny"),
 			onPermissionRequest: this.#opts.onPermissionRequest
-				? (req) => this.#parkForPermission(req)
+				? (req, ctx) => this.#parkForPermission(req, ctx)
 				: undefined,
 			permissionParkMs: this.#opts.permissionParkMs,
 			onUpdate: (sessionId, update) => this.#onConnectionUpdate(sessionId, update),

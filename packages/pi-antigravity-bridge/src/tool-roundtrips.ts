@@ -517,6 +517,12 @@ export class ToolRoundTrips {
 		args: Record<string, unknown>,
 		signal: AbortSignal,
 	): Promise<BridgeCallResultShape | BridgeEscalation> => {
+		// A client that already gave up (killed mid-call, HTTP request aborted)
+		// must not park: the abort listener could never fire on an already-aborted
+		// signal, so the call would sit until the 8-minute timeout. (S7)
+		if (signal.aborted) {
+			return Promise.reject(new Error("agy disconnected before the tool call was parked"));
+		}
 		const handle = this.#getDriver().activeHandle;
 		if (!handle) {
 			return Promise.reject(

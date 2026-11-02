@@ -29,6 +29,7 @@ import { frameCarriesUsage } from "./events.js";
 import type { AgyUsage } from "../driver-types.js";
 import { redactText } from "../redact.js";
 import { JsonRpcResponseError, JsonRpcSession } from "./jsonrpc.js";
+import { installProcessCleanup, signalExitCode } from "../process-cleanup.js";
 
 // Active child process groups (PGIDs) across all live AcpConnection instances.
 // Used for immediate synchronous cleanup on process exit or termination signals.
@@ -66,14 +67,24 @@ function installExitHook(): void {
 		liveProcessGroups.clear();
 	};
 
-	process.once("exit", emergencyClean);
-	for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-		process.on(sig, () => {
-			emergencyClean();
-			const exitCode = sig === "SIGINT" ? 130 : sig === "SIGTERM" ? 143 : 129;
-			process.exit(exitCode);
-		});
-	}
+	// Host-aware: pi keeps ownership of its own signals (S6).
+	installProcessCleanup("pi-antigravity-bridge:acp-connection", {
+		exit: emergencyClean,
+		signals: {
+			SIGINT: () => {
+				emergencyClean();
+				process.exit(signalExitCode("SIGINT"));
+			},
+			SIGTERM: () => {
+				emergencyClean();
+				process.exit(signalExitCode("SIGTERM"));
+			},
+			SIGHUP: () => {
+				emergencyClean();
+				process.exit(signalExitCode("SIGHUP"));
+			},
+		},
+	});
 }
 
 export interface AcpMcpServer {
@@ -164,8 +175,35 @@ export interface AcpPermissionRequest {
 	toolCall?: { toolCallId?: string; kind?: string; title?: string };
 }
 
-export type AcpPermissionHandler = (req: AcpPermissionRequest) => Promise<string | null | undefined>;
+export type AcpPermissionHandler = (
+	req: AcpPermissionRequest,
+	ctx: AcpPermissionContext,
+) => Promise<string | null | undefined>;
 
+/** Context handed to the permission handler so the dialog it opens can be
+ *  closed when the park settles. Without it an expired park left the dialog
+ *  on screen holding the cross-extension dialog lock (S8). */
+export interface AcpPermissionContext {
+	/** Aborted on timeout, connection exit, or a decision already delivered. */
+	signal: AbortSignal;
+	/** Park budget, so the dialog can auto-dismiss at the same deadline. */
+	timeoutMs: number;
+}
+
+
+/** Schedule the hard kill that follows the graceful SIGTERM window. Exported
+ *  for tests: the timer must not keep the event loop alive (S5). */
+export function scheduleHardKill(pid: number, isGone: () => boolean, delayMs = 750): NodeJS.Timeout {
+	const timer = setTimeout(() => {
+		try {
+			if (!isGone()) process.kill(-pid, "SIGKILL");
+		} catch {
+			/* already gone */
+		}
+	}, delayMs);
+	timer.unref();
+	return timer;
+}
 
 export class AcpConnection {
 	#opts: AcpConnectionOptions;
@@ -476,12 +514,17 @@ export class AcpConnection {
 		const parkMs = this.#opts.permissionParkMs ?? PERMISSION_PARK_MS;
 		return new Promise((resolve) => {
 			let timer: NodeJS.Timeout | undefined;
+			// Closes the dialog when this park settles: an orphaned select would
+			// hold the process-wide dialog lock until a human dismissed it, and its
+			// answer is discarded anyway.
+			const cancel = new AbortController();
 			// First settle wins: a late dialog answer after a timeout/deny must
 			// not re-log or record an always-memory from a dead request.
 			let settled = false;
 			const settle = (optionId: string | undefined, why: string): void => {
 				if (settled) return;
 				settled = true;
+				cancel.abort();
 				if (timer) clearTimeout(timer);
 				this.#permissionPending.delete(settleDeny);
 				this.#opts.log("permission", { optionId, policy: why });
@@ -500,7 +543,7 @@ export class AcpConnection {
 			}, parkMs);
 			this.#permissionPending.add(settleDeny);
 			Promise.resolve()
-				.then(() => handler(params))
+				.then(() => handler(params, { signal: cancel.signal, timeoutMs: parkMs }))
 				.then((picked) => {
 					if (settled) return;
 					const chosen = picked != null ? options.find((o) => o.optionId === picked) : undefined;
@@ -591,22 +634,16 @@ export class AcpConnection {
 		const child = this.#child;
 		if (!child || this.#exited) return;
 		this.#opts.log("kill", { pid: child.pid ?? "?" });
-		if (child.pid) {
-			liveProcessGroups.delete(child.pid);
-		}
+		// The pid stays in liveProcessGroups until the child actually exits: the
+		// deferred SIGKILL below may still have descendants to reap, and the
+		// emergency exit hook is the only path left after the host dies (S5).
 		try {
 			if (child.pid && process.platform !== "win32") {
 				if (immediate) {
 					killProcessGroupSync(child.pid, "SIGKILL");
 				} else {
 					process.kill(-child.pid, "SIGTERM");
-					setTimeout(() => {
-						try {
-							if (!this.#exited && child.pid) process.kill(-child.pid, "SIGKILL");
-						} catch {
-							/* already gone */
-						}
-					}, 750);
+					scheduleHardKill(child.pid, () => this.#exited);
 				}
 			} else {
 				if (immediate) {

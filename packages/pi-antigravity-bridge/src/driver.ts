@@ -22,6 +22,7 @@ import { bridgeMcpConfigDir, bridgeMcpConfigExists } from "./mcp-server.js";
 import { gateHooksStaged } from "./approval-hook.js";
 import { parkedTurnAnswer } from "./parked-turn.js";
 import { redactText } from "./redact.js";
+import { installProcessCleanup, signalExitCode } from "./process-cleanup.js";
 import type {
 	AgyUsage,
 	DriverActivity,
@@ -78,15 +79,24 @@ function installStreamExitHook(): void {
 		}
 		liveStreamProcessGroups.clear();
 	};
-
-	process.once("exit", emergencyClean);
-	for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-		process.on(sig, () => {
-			emergencyClean();
-			const exitCode = sig === "SIGINT" ? 130 : sig === "SIGTERM" ? 143 : 129;
-			process.exit(exitCode);
-		});
-	}
+	// Host-aware: pi keeps ownership of its own signals (S6).
+	installProcessCleanup("pi-antigravity-bridge:stream-driver", {
+		exit: emergencyClean,
+		signals: {
+			SIGINT: () => {
+				emergencyClean();
+				process.exit(signalExitCode("SIGINT"));
+			},
+			SIGTERM: () => {
+				emergencyClean();
+				process.exit(signalExitCode("SIGTERM"));
+			},
+			SIGHUP: () => {
+				emergencyClean();
+				process.exit(signalExitCode("SIGHUP"));
+			},
+		},
+	});
 }
 
 const LIFECYCLE_LIMIT = 24;

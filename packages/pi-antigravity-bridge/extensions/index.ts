@@ -104,6 +104,8 @@ import { bridgedPiTools } from "../src/bridge-catalog.js";
 import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 import { withDialogLock } from "../src/dialog-lock.js";
+import { installProcessCleanup, signalExitCode } from "../src/process-cleanup.js";
+import { distinctLabels } from "../src/permission-labels.js";
 
 // The server disowning our verified marker (-32000 anywhere: turn, session
 // new/load, cancel) must drop it, or ensureAcpReady keeps reporting a login
@@ -321,13 +323,19 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// to the same synchronous allow; everything else opens a dialog (esc
 		// and headless deny fail-closed) under the shared dialog lock.
 		permissionPolicy: () => (loadConfig().approvals.mode === "allow" ? "auto" : "deny"),
-		onPermissionRequest: async (req) => {
+		onPermissionRequest: async (req, ctx) => {
 			const ui = activeUi;
 			if (loadConfig().approvals.mode === "deny" || !ui) return undefined;
 			return await withDialogLock(async () => {
-				const labels = req.options.map((o) => o.name ?? o.kind ?? o.optionId ?? "?");
+				const labels = distinctLabels(req.options.map((o, i) => o.name ?? o.kind ?? o.optionId ?? `option ${i + 1}`));
 				const title = req.toolCall?.title ? `agy requests: ${req.toolCall.title}` : "agy requests permission";
-				const picked = await ui.select(title, labels);
+				// signal/timeout mirror the park budget: when the JSON-RPC reply is
+				// already settled the dialog must close instead of lingering as a
+				// zombie that still holds the cross-extension dialog lock (S8).
+				const picked = await ui.select(title, labels, {
+					signal: ctx?.signal,
+					timeout: ctx?.timeoutMs,
+				});
 				if (picked === undefined) return undefined;
 				const idx = labels.indexOf(picked);
 				return idx >= 0 ? (req.options[idx]?.optionId ?? undefined) : undefined;
@@ -1063,13 +1071,24 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}
 	};
 
-	process.once("exit", emergencyCleanup);
-	for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-		process.on(sig, () => {
-			emergencyCleanup();
-			const exitCode = sig === "SIGINT" ? 130 : sig === "SIGTERM" ? 143 : 129;
-			process.exit(exitCode);
-		});
-	}
+	// Host-aware: pi keeps ownership of its own signals (S6). The exit handler is
+	// always installed; each signal only when nothing else listens for it.
+	installProcessCleanup("pi-antigravity-bridge:extension", {
+		exit: emergencyCleanup,
+		signals: {
+			SIGINT: () => {
+				emergencyCleanup();
+				process.exit(signalExitCode("SIGINT"));
+			},
+			SIGTERM: () => {
+				emergencyCleanup();
+				process.exit(signalExitCode("SIGTERM"));
+			},
+			SIGHUP: () => {
+				emergencyCleanup();
+				process.exit(signalExitCode("SIGHUP"));
+			},
+		},
+	});
 }
 
