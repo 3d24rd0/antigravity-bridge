@@ -2,24 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.0.0] - 2026-11-02
 
 ### Changed
 
-- **The settings and engine dialogs now run on Pi's own TUI kit.** `SettingsList` and `SelectList` from `@earendil-works/pi-tui` replace `@estebanforge/pi-tui-dialogs`, which is no longer a dependency of this package. The `/agy` menu keeps its eleven rows, two-column values, type-to-search and stage-then-save-on-close; the engine picker keeps its intro paragraph and esc-means-decide-later. The same change removed a dead "Switch engine" row: its Enter resolved the menu with an id nothing consumed, so it closed the settings and did nothing.
-- **The row id -> config mapping moved into a pure function (`applySettingChange`)** so the settings surface is covered by tests without a TUI.
-
-## [1.0.0] - 2026-10-31
-
-### Changed
-
-- Initial 1.0.0 release of `@3d24rd0/pi-antigravity-bridge`.
+- Initial public release of `@3d24rd0/pi-antigravity-bridge`.
+- **The settings and engine dialogs run on Pi's own TUI kit.** `SettingsList` and `SelectList` from `@earendil-works/pi-tui` replace `@estebanforge/pi-tui-dialogs`, which is no longer a dependency. The `/agy` menu keeps its rows, two-column values, type-to-search and stage-then-save-on-close; the engine picker keeps its intro paragraph and esc-means-decide-later. A dead "Switch engine" row was removed: its Enter resolved the menu with an id nothing consumed.
+- **The row id -> config mapping is a pure function (`applySettingChange`)** so the settings surface is covered by tests without a TUI.
 - **Improve `/agy quota` display fidelity.** Renders model group subtitles (e.g. models included in each group) and handles `disabled: true` quota buckets (e.g. 5-hour limit when weekly limit is reached) with clear explanatory notices instead of rendering a misleading 100% bar.
 - **Safety clamp on large bridge tool outputs (`clampToolOutput`, 32KB max).** Bridge tool call outputs exceeding 32,000 characters are now safely truncated at the boundary with an informative notice advising line-range or command filters. This serves as an unbreachable fuse preventing runaway command or file reads from permanently poisoning conversation context windows and exhausting rolling 3-hour quotas.
 - **Token conservation guidance in tool-priority note.** Instructs models to proactively bound tool calls with `StartLine`/`EndLine` for files over ~100 lines and use `head`, `tail`, or `--stat` for terminal commands.
 - **Filter out orchestrator and administrative tools from the bridge catalog.** Tools intended solely for internal orchestrator relays (`orchestrator_*`, `gentle_odd_phase`, `session_worktree_register`) and administrative memory tools (`mem_doctor`, `mem_judge`, `mem_compare`, `mem_stats`, etc.) are excluded from the MCP tool catalog, while keeping `gentle_review` and essential tools active for primary orchestrator workflows.
 - **Set default thinking tier to `low` in defaults.** New configurations and default fallback now default to `low` thinking effort to prevent unnecessary reasoning token consumption on high-volume models like Gemini Flash.
 - **Condense `activate_skill` tool catalog description.** `activate_skill` description now provides a concise comma-separated list of available skill names instead of full multi-line descriptions that duplicated the system prompt.
+
+### Fixed
+
+- **A turn that stalls after streaming text now delivers the answer recovered from the transcript.** The missing tail is emitted when the recovered answer extends what was streamed; a divergent answer is added as its own block instead of being dropped or duplicated. Previously only turns that had streamed nothing received the recovery.
+- **A stranded escalated tool result stays on the current conversation.** It no longer moves the next turn to the conversation that produced it, and no longer deletes the binding of the conversation the user is on. The current binding wins; the strand's conversation is a fallback only when the session has none.
+- **The silent-over-cap and poisoned-conversation guards also classify the late redelivery turn**, so an over-cap redelivery fails visibly instead of persisting an empty `OK`.
+- **`SessionStore` no longer loses a mutation that lands mid-write.** Each write clears only the keys it captured, so a concurrent `set()`/`delete()` survives to disk.
+- **Permission dialogs resolve the picked option by identity.** Duplicate labels are disambiguated, so the answered `optionId` is the one the user chose; an expired park closes the dialog instead of leaving a zombie holding the cross-extension dialog lock.
+- **Signal cleanup never overrides the host.** Handlers install only when Pi owns nothing for that signal, ownership is re-checked when the signal arrives, sibling bridge keys are not mistaken for the host, and a reload replaces this key's handlers instead of stacking.
+- **The deferred hard kill keeps the process group in the emergency ledger** until the child exits, and its timer no longer holds the event loop open.
+- **Settled approval tickets are reaped on every decision**, not only when the next approval is parked.
+- **`isAgyInstalled` works on Windows**: backslash paths are treated as paths and a bare name is resolved through `PATHEXT` (including dotted names such as `agy.v2`).
+- **`@earendil-works/pi-ai` is declared** as a peer dependency (it was imported by seven modules and resolved only through hoisting).
 
 ## [1.8.7] - 2026-10-21
 
