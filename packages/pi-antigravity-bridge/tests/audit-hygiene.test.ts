@@ -21,6 +21,40 @@ test("S8 duplicate permission labels stay distinguishable", () => {
 	assert.deepEqual(distinctLabels(["Read", "Write"]), ["Read", "Write"], "no change when labels are unique");
 });
 
+test("S8b generated suffixes never collide with a literal or another suffix", () => {
+	// A literal that already looks like a generated suffix must stay verbatim,
+	// so the repeat has to skip past it.
+	assert.deepEqual(distinctLabels(["Allow", "Allow", "Allow (2)"]), ["Allow", "Allow (3)", "Allow (2)"]);
+	// A generated suffix must not steal a later literal's exact text.
+	assert.deepEqual(distinctLabels(["Allow", "Allow (2)", "Allow"]), ["Allow", "Allow (2)", "Allow (3)"]);
+	assert.deepEqual(distinctLabels(["Allow (2)", "Allow (2)"]), ["Allow (2)", "Allow (2) (2)"]);
+});
+
+test("S8c every output label is unique and position-preserving for any input", () => {
+	const cases: string[][] = [
+		[],
+		["Read", "Write"],
+		["Allow", "Allow", "Allow (2)"],
+		["Allow", "Allow (2)", "Allow"],
+		["Allow (2)", "Allow (2)"],
+		["Allow (3)", "Allow", "Allow", "Allow (2)", "Allow"],
+		["Allow", "Allow (2)", "Allow (3)", "Allow"],
+	];
+	for (const input of cases) {
+		const output = distinctLabels(input);
+		assert.equal(output.length, input.length, `length preserved for ${JSON.stringify(input)}`);
+		assert.equal(
+			new Set(output).size,
+			output.length,
+			`labels must be unique for ${JSON.stringify(input)} -> ${JSON.stringify(output)}`,
+		);
+		// A label keeps its own text whenever that text is still free.
+		input.forEach((label, i) => {
+			if (input.indexOf(label) === i) assert.equal(output[i], label);
+		});
+	}
+});
+
 test("S9 only settled parks older than the TTL are swept", () => {
 	const now = 1_000_000;
 	const entry = (name: string, terminalAt?: number): ParkEntry => ({
