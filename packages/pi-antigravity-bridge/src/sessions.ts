@@ -146,11 +146,19 @@ export class SessionStore {
 		} catch {
 			/* missing or corrupt  -  start from empty */
 		}
+		// Snapshot exactly what THIS write covers. Mutations that land during the
+		// awaits below must stay tracked for the next queued write instead of
+		// being cleared unwritten (a lost conversationId/watermark).
+		const written = new Map<string, AgySession>();
+		const deleted = new Set<string>(this.removed);
 		const merged: StoreMap = { ...disk };
 		for (const key of this.dirty) {
-			merged[key] = this.cache[key];
+			const value = this.cache[key];
+			if (value === undefined) continue; // deleted meanwhile: covered by `removed`
+			written.set(key, value);
+			merged[key] = value;
 		}
-		for (const key of this.removed) {
+		for (const key of deleted) {
 			delete merged[key];
 		}
 
@@ -159,11 +167,16 @@ export class SessionStore {
 			mode: 0o600,
 		});
 		await fs.promises.rename(tmp, this.path);
-		this.dirty.clear();
-		// Mirror dirty: once the deletion is durable, stop re-asserting it. A
-		// later unrelated persist must not destroy a record another process
-		// wrote for that key after our delete landed.
-		this.removed.clear();
+		// Clear only the entries this write captured. A set() that replaced the
+		// value during the write leaves a different object in the cache and stays
+		// dirty for the next pass; a delete() that is now shadowed by a newer
+		// set() is already gone from `removed`.
+		for (const [key, value] of written) {
+			if (this.cache[key] === value) this.dirty.delete(key);
+		}
+		for (const key of deleted) {
+			if (!(key in this.cache)) this.removed.delete(key);
+		}
 	}
 
 	/** Wipe all session bindings (forces fresh agy conversations on every
@@ -187,5 +200,11 @@ export class SessionStore {
 	/** Count persisted session bindings (for status display). */
 	get size(): number {
 		return Object.keys(this.cache).length;
+	}
+
+	/** Resolves when every queued write settled. The normal path is
+	 *  fire-and-forget; tests and shutdown use this to observe the disk. */
+	flush(): Promise<void> {
+		return this.writeChain.catch(() => {});
 	}
 }
