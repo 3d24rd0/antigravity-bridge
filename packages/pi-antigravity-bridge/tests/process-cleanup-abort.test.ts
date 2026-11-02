@@ -11,7 +11,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { installProcessCleanup } from "../src/process-cleanup.js";
+import { installProcessCleanup, signalHandler, uninstallProcessCleanup } from "../src/process-cleanup.js";
 import { scheduleHardKill } from "../src/acp/connection.js";
 import { ToolRoundTrips } from "../src/tool-roundtrips.js";
 import type { StreamDriver } from "../src/driver.js";
@@ -57,18 +57,56 @@ test("S6 no signal handler is installed when the host owns the signal", () => {
 
 test("S6 one handler is installed when nobody owns the signal", () => {
 	const before = process.listenerCount("SIGUSR2");
-	install("test-nobody-owns", false);
-	assert.equal(process.listenerCount("SIGUSR2"), before + 1);
+	try {
+		install("test-nobody-owns", false);
+		assert.equal(process.listenerCount("SIGUSR2"), before + 1);
+	} finally {
+		uninstallProcessCleanup("test-nobody-owns");
+	}
+});
+
+test("S6b sibling bridge keys are not mistaken for the host", () => {
+	const before = process.listenerCount("SIGUSR1");
+	try {
+		install("test-sibling-a", false);
+		const afterFirst = process.listenerCount("SIGUSR1");
+		// The probe must subtract the bridge's own handlers: a second key has to
+		// install its own cleanup instead of reading its sibling as host ownership.
+		install("test-sibling-b", false);
+		assert.equal(process.listenerCount("SIGUSR1"), afterFirst + 1);
+	} finally {
+		uninstallProcessCleanup("test-sibling-a");
+		uninstallProcessCleanup("test-sibling-b");
+	}
+	assert.equal(process.listenerCount("SIGUSR1"), before);
+});
+
+test("S6c a host that appears after load keeps shutdown ownership", () => {
+	const calls: string[] = [];
+	const cleanup = () => calls.push("cleanup");
+	const exit = (code: number) => calls.push(`exit:${code}`);
+
+	signalHandler("SIGTERM", cleanup, { hasHostListener: () => true, exit })();
+	assert.deepEqual(calls, ["cleanup"], "cleanup runs but the host keeps the exit");
+
+	signalHandler("SIGTERM", cleanup, { hasHostListener: () => false, exit })();
+	assert.deepEqual(calls, ["cleanup", "cleanup", "exit:143"]);
 });
 
 test("S6 a reload replaces this key's handlers instead of stacking", () => {
 	const exitBefore = process.listenerCount("exit");
 	const usrBefore = process.listenerCount("SIGUSR2");
-	install("test-reload", false);
-	install("test-reload", false);
-	install("test-reload", false);
-	assert.equal(process.listenerCount("SIGUSR2"), usrBefore + 1, "one live handler after three loads");
-	assert.equal(process.listenerCount("exit"), exitBefore + 1, "one exit hook after three loads");
+	try {
+		install("test-reload", false);
+		install("test-reload", false);
+		install("test-reload", false);
+		assert.equal(process.listenerCount("SIGUSR2"), usrBefore + 1, "one live handler after three loads");
+		assert.equal(process.listenerCount("exit"), exitBefore + 1, "one exit hook after three loads");
+	} finally {
+		uninstallProcessCleanup("test-reload");
+	}
+	assert.equal(process.listenerCount("SIGUSR2"), usrBefore, "tests must not leak a listener into the worker");
+	assert.equal(process.listenerCount("exit"), exitBefore);
 });
 
 test("S7 an already-aborted client signal is rejected, not parked", async () => {

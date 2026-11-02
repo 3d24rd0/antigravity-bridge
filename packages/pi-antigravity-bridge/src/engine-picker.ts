@@ -94,8 +94,12 @@ export function isAgyInstalled(
 		platform === "win32"
 			? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
 			: [""];
-	// An explicit extension is used as-is; a bare name tries each PATHEXT entry.
-	const candidates = /\.[a-z0-9]+$/i.test(binRef) ? [""] : extensions;
+	// Only a PATHEXT suffix counts as an explicit extension. A dotted bare name
+	// (agy.v2) is still resolved through PATHEXT, so a working install is not
+	// reported missing (JD-B-005).
+	const explicitExtension =
+		platform !== "win32" || extensions.some((ext) => binRef.toLowerCase().endsWith(ext.toLowerCase()));
+	const candidates = explicitExtension ? [""] : extensions;
 	return (env.PATH ?? "")
 		.split(path.delimiter)
 		.filter(Boolean)

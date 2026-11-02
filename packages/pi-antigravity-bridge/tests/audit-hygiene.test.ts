@@ -83,3 +83,14 @@ test("S10 a .cmd install is found on Windows through PATHEXT", () => {
 	// An explicit path keeps working on every platform.
 	assert.equal(isAgyInstalled(path.join(dir, "agy.cmd"), {}, "darwin"), true);
 });
+
+test("S10b a dotted Windows name still tries PATHEXT", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-win-dot-"));
+	fs.writeFileSync(path.join(dir, "agy.v2.cmd"), "@echo off\n");
+	// A dot in the bare name is not proof of an explicit extension: only a
+	// PATHEXT suffix is.
+	assert.equal(isAgyInstalled("agy.v2", { PATH: dir, PATHEXT: ".EXE;.CMD" }, "win32"), true);
+
+	fs.writeFileSync(path.join(dir, "agy.exe"), "");
+	assert.equal(isAgyInstalled("agy.exe", { PATH: dir, PATHEXT: ".EXE;.CMD" }, "win32"), true);
+});

@@ -386,6 +386,10 @@ export async function startMcpServer(
 		p.terminal = decision;
 		p.terminalAt = Date.now();
 		clearTimeout(p.timer);
+		// Reap old settled tickets on EVERY decision, not only when a new one is
+		// parked: a burst whose hook dies before polling would otherwise leave
+		// every entry resident until pi exits (JD-B-002).
+		sweepSettledParks(parks);
 		return true;
 	};
 	const approvalsApi: ApprovalParkApi = {

@@ -193,7 +193,7 @@ export class AcpDriver implements TurnDriver {
 			this.#clearIdle(t);
 			this.#pauseOverall(t);
 		}
-			try {
+		try {
 			return await this.#opts.onPermissionRequest!(req, ctx);
 		} finally {
 			if (parked && !t.closed && t.parks > 0) {

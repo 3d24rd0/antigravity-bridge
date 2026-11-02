@@ -37,9 +37,16 @@ function registry(): Map<string, Array<[Signal, Handler]>> {
 	return created;
 }
 
-/** True when anything else already listens for `sig`. */
+/** True when something OUTSIDE this package already listens for `sig`. The
+ *  bridge's own handlers (every registry key, including a sibling module's)
+ *  are subtracted: counting them made only the first key per signal install
+ *  and left the others thinking the host owned it (JD-B-003). */
 export function hostOwnsSignal(sig: NodeJS.Signals): boolean {
-	return process.listenerCount(sig) > 0;
+	let ours = 0;
+	for (const handlers of registry().values()) {
+		for (const [installed] of handlers) if (installed === sig) ours += 1;
+	}
+	return process.listenerCount(sig) - ours > 0;
 }
 
 /** Register `key`'s cleanup, replacing whatever that key registered before. */
@@ -57,10 +64,46 @@ export function installProcessCleanup(key: string, opts: CleanupOptions): void {
 	for (const [sig, handler] of Object.entries(opts.signals ?? {})) {
 		const signal = sig as NodeJS.Signals;
 		if (hasHost(signal)) continue;
-		process.on(signal, handler);
-		installed.push([signal, handler]);
+		// Wrapped so ownership is re-checked when the signal actually arrives:
+		// a host that registered after extension load must keep its shutdown
+		// instead of being preempted by our process.exit (JD-B-004).
+		const wrapped = signalHandler(signal, handler, opts.hasHostListener ? { hasHostListener: opts.hasHostListener } : {});
+		process.on(signal, wrapped);
+		installed.push([signal, wrapped]);
 	}
 	reg.set(key, installed);
+}
+
+/** Remove one key's handlers. Tests use it to keep the shared worker process
+ *  clean between files (JD-B-006). */
+export function uninstallProcessCleanup(key: string): void {
+	const reg = registry();
+	for (const [sig, handler] of reg.get(key) ?? []) process.off(sig, handler);
+	reg.delete(key);
+}
+
+export interface SignalHandlerOptions {
+	/** Injectable ownership probe (defaults to {@link hostOwnsSignal}). */
+	hasHostListener?: (sig: NodeJS.Signals) => boolean;
+	/** Injectable exit (tests); defaults to `process.exit`. */
+	exit?: (code: number) => void;
+}
+
+/** Build a signal handler that always runs the cleanup, then exits ONLY when
+ *  the host still owns nothing for that signal. Exported so the delivery-time
+ *  ownership rule is testable without emitting real signals. */
+export function signalHandler(
+	sig: NodeJS.Signals,
+	cleanup: Handler,
+	opts: SignalHandlerOptions = {},
+): Handler {
+	const probe = opts.hasHostListener ?? hostOwnsSignal;
+	const exit = opts.exit ?? ((code: number) => process.exit(code));
+	return () => {
+		cleanup();
+		if (probe(sig)) return;
+		exit(signalExitCode(sig));
+	};
 }
 
 /** Conventional exit code for a termination signal. */
