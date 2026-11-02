@@ -90,26 +90,41 @@ export function engineSettingsRow(engine: Engine): DialogRow {
 }
 
 /** True when the `agy` CLI binary can be found. A binRef with a path
- *  separator (AGY_BIN=/opt/agy/agy) must exist as a file; a bare name is
- *  searched on PATH. statSync cannot throw through the guards, but a race
- *  (file removed between listing and stat) fails closed to false. */
-export function isAgyInstalled(binRef: string, env: NodeJS.ProcessEnv = process.env): boolean {
-	if (binRef.includes("/")) {
+ *  separator (`/` or, on Windows, `\`) must exist as a file; a bare name is
+ *  searched on PATH, trying `PATHEXT` extensions on Windows (`agy.exe`,
+ *  `agy.cmd`) so a working install is never reported missing. statSync cannot
+ *  throw through the guards, but a race (file removed between listing and
+ *  stat) fails closed to false. */
+export function isAgyInstalled(
+	binRef: string,
+	env: NodeJS.ProcessEnv = process.env,
+	platform: NodeJS.Platform = process.platform,
+): boolean {
+	if (path.isAbsolute(binRef) || binRef.includes("/") || binRef.includes("\\")) {
 		try {
 			return fs.statSync(binRef).isFile();
 		} catch {
 			return false;
 		}
 	}
+	const extensions =
+		platform === "win32"
+			? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
+			: [""];
+	// An explicit extension is used as-is; a bare name tries each PATHEXT entry.
+	const candidates = /\.[a-z0-9]+$/i.test(binRef) ? [""] : extensions;
 	return (env.PATH ?? "")
 		.split(path.delimiter)
 		.filter(Boolean)
 		.some((dir) => {
-			try {
-				return fs.statSync(path.join(dir, binRef)).isFile();
-			} catch {
-				return false;
+			for (const ext of candidates) {
+				try {
+					if (fs.statSync(path.join(dir, binRef + ext)).isFile()) return true;
+				} catch {
+					/* keep looking */
+				}
 			}
+			return false;
 		});
 }
 

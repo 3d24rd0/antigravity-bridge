@@ -44,6 +44,36 @@ const BRIDGE_MCP_KEY = "pi-antigravity-bridge";
 export const TOKEN_HEADER = "x-bridge-token";
 const MAX_BODY_BYTES = 1_000_000;
 
+/** One parked approval decision (ticket -> entry). */
+export interface ParkEntry {
+	name: string;
+	since: number;
+	timer: NodeJS.Timeout;
+	terminal?: ApprovalDecision;
+	/** When the terminal decision landed (sweep age). */
+	terminalAt?: number;
+}
+
+/** A settled ticket nobody polls must not live for the process lifetime. */
+export const PARK_SWEEP_TTL_MS = 10 * 60_000;
+
+/** Drop settled entries older than `ttlMs`; returns how many were dropped.
+ *  Pure so the sweep is testable without a server (S9). */
+export function sweepSettledParks(
+	parks: Map<string, ParkEntry>,
+	now: number = Date.now(),
+	ttlMs: number = PARK_SWEEP_TTL_MS,
+): number {
+	let swept = 0;
+	for (const [ticket, p] of parks) {
+		if (!p.terminal) continue;
+		if (now - (p.terminalAt ?? p.since) < ttlMs) continue;
+		parks.delete(ticket);
+		swept += 1;
+	}
+	return swept;
+}
+
 // --- approval gate (docs/TODO.md 2.5) ---------------------------------------
 
 /** stdin JSON of a PreToolUse hook, forwarded verbatim by the bundled poll
@@ -349,14 +379,12 @@ export async function startMcpServer(
 	// Ticket -> parked approval. A settled ticket STAYS in the map until its
 	// terminal decision is delivered to a poll, so the hook never 404s on the
 	// answer; an unknown/expired ticket 404s and the hook fails closed.
-	const parks = new Map<
-		string,
-		{ name: string; since: number; timer: NodeJS.Timeout; terminal?: ApprovalDecision }
-	>();
+	const parks = new Map<string, ParkEntry>();
 	const settlePark = (ticket: string, decision: ApprovalDecision): boolean => {
 		const p = parks.get(ticket);
 		if (!p || p.terminal) return false;
 		p.terminal = decision;
+		p.terminalAt = Date.now();
 		clearTimeout(p.timer);
 		return true;
 	};
@@ -441,6 +469,10 @@ export async function startMcpServer(
 				log("approval-timeout", { ticket, name: payload.toolCall.name });
 			}, approvalTimeoutMs);
 			parks.set(ticket, { name: payload.toolCall.name, since: Date.now(), timer });
+			// Settled tickets nobody polls are swept instead of accumulating for the
+			// process lifetime (a dead hook never polls).
+			const swept = sweepSettledParks(parks);
+			if (swept > 0) log("approval-swept", { swept });
 			log("approval-parked", { ticket, name: payload.toolCall.name });
 			try {
 				deps.onApproval(ticket, payload);

@@ -62,7 +62,7 @@ Configure and diagnose the provider in real time. Settings persist to `~/.pi/age
 | `/agy quota` | Show remaining Antigravity subscription quota. |
 | `/agy mode accept-edits \| plan` | Set execution mode (default: `accept-edits`). |
 | `/agy ask on \| off` | Enable/disable the `AskAntigravity` delegation tool. |
-| `/agy bridge all \| mcp \| none` | Control which Pi tools are exposed to Antigravity (default: `all`). |
+| `/agy bridge all \| mcp \| none` | Control which non-builtin Pi tools are exposed to Antigravity (default: `all`). Builtins stay with agy's own native tools. |
 | `/agy tools [hide \| show \| reset]` | Hide specific Pi tools from the model catalog. |
 | `/agy clear` | Clear stored conversation bindings (forces fresh sessions). |
 
@@ -74,6 +74,30 @@ Use the built-in `AskAntigravity` tool to delegate tasks to an isolated `agy` in
 ```markdown
 AskAntigravity parameters: prompt, model (optional), thinking (optional), includeContext (optional).
 ```
+
+---
+
+## Permissions & Safety
+
+Defaults, stated plainly:
+
+- **`skipPermissions: true`.** The `agy` engine runs its own tool loop, and its
+  native tools are **not** prompted by Pi by default. An Antigravity turn can
+  execute commands and write files on this machine.
+- **Approval gate off by default.** `approvals.gateMode` is `auto`, which stages
+  the gate only when a third-party Pi permission extension is detected. Set
+  `AGY_APPROVALS=shadow` to route mutating native tools (`create_file`,
+  `write_to_file`, `replace_file_content`, `run_command`, …) through Pi's
+  permission flow: an `agy` tool call then parks as a shadow Pi tool and waits
+  for your decision. Headless sessions deny.
+- **Provider turns cannot be made read-only.** `/agy readonly on` makes provider
+  turns refuse to run rather than pretend to enforce review-only: upstream plan
+  mode is a no-op and the write executes in the same turn. Enforce read-only with
+  Pi tool restrictions or the approval gate.
+- **Bridge exposure.** The MCP bridge binds to `127.0.0.1`, requires a per-session
+  bearer token (constant-time compare), writes token-bearing files `0600`, and
+  exposes only tools in Pi's live active set — never orchestrator internals or
+  administrative memory tools.
 
 ---
 
