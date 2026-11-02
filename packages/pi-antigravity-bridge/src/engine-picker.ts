@@ -7,18 +7,18 @@
 // Every start with the stream-json engine active also re-checks that the
 // `agy` binary exists and warns until it does (re-auth is out of scope).
 //
-// UI: the shared framed choice modal from @estebanforge/pi-tui-dialogs
-// (dialogChoice): one decision statement, a closed option list, esc cancels.
+// UI: the framed choice overlay built on pi-tui's SelectList (src/settings-menu.ts):
+// one decision statement, a closed option list, esc cancels.
 
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { dialogChoice, type ChoiceOption, type DialogContext, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import { showChoiceMenu, type ChoiceRow } from "./settings-menu.js";
 import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_ENGINE, type Engine } from "./config.js";
 
 /** Picker order is the default answer order: acp (the default engine)
  *  preselected first, stream-json as the fallback. */
-export const ENGINE_PICKER_ITEMS: ChoiceOption[] = [
+export const ENGINE_PICKER_ITEMS: ChoiceRow[] = [
 	{
 		value: "acp",
 		label: "ACP server (official Google)",
@@ -72,23 +72,6 @@ export function savedEngineMessage(engine: Engine): string {
 		: "Engine saved: stream-json. Restart pi to apply.";
 }
 
-/** /agy settings row that opens the engine picker. Deliberately value-less:
- *  DialogMenu cycles rows that carry `values`, but resolves the menu with the
- *  row id on Enter for rows without — the caller then closes settings and
- *  opens the same modal as the first-run wizard. The active engine rides as
- *  the display value so the row reads like the rest of the surface. */
-export const ENGINE_SETTINGS_ROW_ID = "engine";
-
-export function engineSettingsRow(engine: Engine): DialogRow {
-	return {
-		id: ENGINE_SETTINGS_ROW_ID,
-		label: "Switch engine",
-		description:
-			"Open the engine picker (stream-json CLI vs the official ACP server). Enter opens it and closes settings; esc in the picker changes nothing. Restart applies a switch.",
-		currentValue: engine,
-	};
-}
-
 /** True when the `agy` CLI binary can be found. A binRef with a path
  *  separator (`/` or, on Windows, `\`) must exist as a file; a bare name is
  *  searched on PATH, trying `PATHEXT` extensions on Windows (`agy.exe`,
@@ -134,21 +117,12 @@ export function agyMissingMessage(): string {
 	return "The `agy` CLI is not installed. Install it from https://antigravity.google/product/antigravity-cli and log in on it to use Antigravity models.";
 }
 
-/** The kit's DialogContext wants the whole extension context, but both picker
- *  call sites hold only the ui object and are TUI-gated (ctx.mode === "tui")
- *  before they run. Wrap instead of threading two different ctx shapes. The
- *  cast is the pi-custom-options vs unknown-options signature gap; custom and
- *  notify exist at runtime on ExtensionUIContext. */
-function asDialogContext(ui: ExtensionUIContext): DialogContext {
-	return { hasUI: true, mode: "tui", ui: ui as unknown as DialogContext["ui"] };
-}
-
-/** Render the choice modal via the shared dialog kit. Resolves with the
- *  chosen engine, or undefined when the user pressed esc (decide later -
- *  nothing is persisted). */
+/** Render the engine choice. Resolves with the chosen engine, or undefined
+ *  when the user cancelled (decide later - nothing is persisted). */
 export async function showEnginePicker(ctx: ExtensionUIContext): Promise<Engine | undefined> {
-	const picked = await dialogChoice(asDialogContext(ctx), "Antigravity Bridge: choose your engine", {
-		description: ENGINE_PICKER_INTRO,
+	const picked = await showChoiceMenu(ctx, {
+		title: "Antigravity Bridge: choose your engine",
+		intro: ENGINE_PICKER_INTRO,
 		options: ENGINE_PICKER_ITEMS,
 		footer: "↑↓ navigate · enter select · esc decide later",
 	});

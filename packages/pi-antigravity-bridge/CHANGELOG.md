@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **The settings and engine dialogs now run on Pi's own TUI kit.** `SettingsList` and `SelectList` from `@earendil-works/pi-tui` replace `@estebanforge/pi-tui-dialogs`, which is no longer a dependency of this package. The `/agy` menu keeps its eleven rows, two-column values, type-to-search and stage-then-save-on-close; the engine picker keeps its intro paragraph and esc-means-decide-later. The same change removed a dead "Switch engine" row: its Enter resolved the menu with an id nothing consumed, so it closed the settings and did nothing.
+- **The row id -> config mapping moved into a pure function (`applySettingChange`)** so the settings surface is covered by tests without a TUI.
+
 ## [1.0.0] - 2026-10-31
 
 ### Changed

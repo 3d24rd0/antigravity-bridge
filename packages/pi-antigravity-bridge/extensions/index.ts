@@ -28,7 +28,6 @@ import {
 	createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
 import {
 	entriesFromRaw,
 	expandAgyModels,

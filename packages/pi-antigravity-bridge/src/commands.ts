@@ -6,7 +6,7 @@ import {
 	type ExtensionCommandContext,
 	type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
-import { DIALOG_OPTIONS, DialogMenu, type DialogRow } from "@estebanforge/pi-tui-dialogs";
+import { showSettingsMenu, type MenuRow } from "./settings-menu.js";
 import type { AgyModelEntry } from "./models.js";
 import type { SessionStore } from "./sessions.js";
 import type { TurnDriver } from "./driver-types.js";
@@ -87,6 +87,50 @@ interface PendingConfig {
 	bridgeTools?: BridgeTools;
 	digest?: boolean;
 	systemPrompt?: boolean;
+}
+
+/** Map one committed settings value onto the pending config patch. Pure so the
+ *  surface is testable without a TUI: a wrong branch silently writes the wrong
+ *  config key, which no rendering test would catch. Unknown row ids are a
+ *  no-op. */
+export function applySettingChange(pending: PendingConfig, id: string, value: string): void {
+	switch (id) {
+		case "mode":
+			pending.mode = value as AgyMode;
+			break;
+		case "readonly":
+			pending.readOnly = value === "on";
+			break;
+		case "permissions":
+			pending.skipPermissions = value === "auto-approved";
+			break;
+		case "model":
+			pending.defaultModel = value;
+			break;
+		case "thinking":
+			pending.defaultThinking = value as ThinkingTier;
+			break;
+		case "ask":
+			pending.askTool = value === "on";
+			break;
+		case "web":
+			pending.webTools = value === "on";
+			break;
+		case "bridge":
+			pending.bridgeTools = value as BridgeTools;
+			break;
+		case "turn-cap":
+			pending.turnTimeoutMin = Number(value);
+			break;
+		case "digest":
+			pending.digest = value === "on";
+			break;
+		case "system-prompt":
+			pending.systemPrompt = value === "on";
+			break;
+		default:
+			break;
+	}
 }
 
 function settingsRows(ctx: AgyCommandCtx): string[] {
@@ -759,7 +803,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 	const config = loadConfig();
 	const pending: PendingConfig = {};
 
-	const rows: DialogRow[] = [
+	const rows: MenuRow[] = [
 		{
 			id: "mode",
 			label: "Execution mode",
@@ -850,55 +894,12 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 		},
 	];
 
-	const resolved = await ui.custom<string | undefined>(
-		(host, theme, _kb, done) => {
-			const menu = new DialogMenu(
-				host,
-				theme,
-				{
-					title: "Antigravity provider",
-					subtitle: `Config file: ${CONFIG_PATH} — changes save when the dialog closes`,
-					rows,
-					footer: "↑↓ navigate · Enter/Space cycle · Type to search · Esc close",
-					onChange: (id, newValue) => {
-						if (id === "mode") {
-							pending.mode = newValue as AgyMode;
-						} else if (id === "readonly") {
-							pending.readOnly = newValue === "on";
-						} else if (id === "permissions") {
-							pending.skipPermissions = newValue === "auto-approved";
-						} else if (id === "model") {
-							pending.defaultModel = newValue;
-						} else if (id === "thinking") {
-							pending.defaultThinking = newValue as ThinkingTier;
-						} else if (id === "ask") {
-							pending.askTool = newValue === "on";
-						} else if (id === "web") {
-							pending.webTools = newValue === "on";
-						} else if (id === "bridge") {
-							pending.bridgeTools = newValue as BridgeTools;
-						} else if (id === "turn-cap") {
-							pending.turnTimeoutMin = Number(newValue);
-						} else if (id === "digest") {
-							pending.digest = newValue === "on";
-						} else if (id === "system-prompt") {
-							pending.systemPrompt = newValue === "on";
-						}
-					},
-				},
-				(rowId) => done(rowId),
-			);
-			return {
-				render: (w: number) => menu.render(w),
-				invalidate: () => menu.invalidate(),
-				handleInput: (data: string) => {
-					menu.handleInput(data);
-					host.requestRender();
-				},
-			};
-		},
-		DIALOG_OPTIONS,
-	);
+	await showSettingsMenu(ui, {
+		title: "Antigravity provider",
+		subtitle: `Config file: ${CONFIG_PATH} — changes save when the dialog closes`,
+		rows,
+		onChange: (id, newValue) => applySettingChange(pending, id, newValue),
+	});
 
 	if (Object.keys(pending).length === 0) {
 		return;
