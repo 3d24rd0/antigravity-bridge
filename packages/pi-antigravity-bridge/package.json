@@ -59,7 +59,7 @@
     }
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.31.0"
+    "@modelcontextprotocol/sdk": "^1.32.2"
   },
   "homepage": "https://github.com/3d24rd0/pi-extensions/tree/main/packages/pi-antigravity-bridge#readme",
   "bugs": {
