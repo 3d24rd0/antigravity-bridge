@@ -32,7 +32,7 @@ import {
 } from "@earendil-works/pi-ai";
 import fs from "node:fs";
 import type { Api } from "@earendil-works/pi-ai";
-import type { DriverActivity, TurnDriver, TurnHandle } from "./driver-types.js";
+import type { DriverActivity, TurnDriver, TurnHandle, TurnOutcome } from "./driver-types.js";
 import { SubagentRoster } from "./subagent-roster.js";
 import { toPiUsage } from "./stream-events.js";
 import { mapAgyToolToNative } from "./native-tools.js";
@@ -693,7 +693,12 @@ async function runTurnDriver(
 				skipPermissions: config.skipPermissions,
 				timeoutMin: config.turnTimeoutMin,
 				inactivityMin: config.inactivityTimeoutMin,
-				conversationId: redeliveryConversation ?? existing?.conversationId ?? null,
+				// The CURRENT binding always wins: a stranded result from an older
+				// conversation must not move this turn there (and then delete the
+				// binding it replaced). The strand's conversation is only a fallback
+				// when this session has no binding at all, so a late result still
+				// lands in the conversation that asked for it.
+				conversationId: existing?.conversationId ?? redeliveryConversation ?? null,
 				prompt: fullPrompt,
 				images: images.length > 0 ? images : undefined,
 				agent,
@@ -768,39 +773,45 @@ async function runTurnDriver(
 	// (probe 2026-09-30: resume of a dropped-turn conversation never returns
 	// a result frame). stream-json only: the ACP driver leaves the evidence
 	// fields undefined.
-	const silentDrop = outcome.status === "OK" && outcome.modelOutputSeen === false;
-	const poisonedResume =
-		outcome.status === "ERROR" &&
-		outcome.deadline !== undefined &&
-		outcome.sawResult === false &&
-		Boolean(existing?.conversationId);
-	if (silentDrop || poisonedResume) {
-		if (!isEphemeral && (existing?.conversationId || outcome.conversationId)) {
+	/** Issue #2 recovery paths: agy's stream-json prompt path silently drops an
+	 *  over-cap turn (SUCCESS, empty response, zero usage, NO model step) and a
+	 *  dropped turn leaves the conversation permanently unresponsive, so both
+	 *  failures clear the binding instead of settling a quiet empty reply.
+	 *  Applied to the late redelivery outcome too: a redelivered late result can
+	 *  cross the same cap. */
+	const droppedTurnError = (o: TurnOutcome): string | undefined => {
+		const silentDrop = o.status === "OK" && o.modelOutputSeen === false;
+		const poisonedResume =
+			o.status === "ERROR" &&
+			o.deadline !== undefined &&
+			o.sawResult === false &&
+			Boolean(existing?.conversationId);
+		if (!silentDrop && !poisonedResume) return undefined;
+		if (!isEphemeral && (existing?.conversationId || o.conversationId)) {
 			store.delete(key);
-			if (outcome.conversationId) stagedAgentByConversation.delete(outcome.conversationId);
+			if (o.conversationId) stagedAgentByConversation.delete(o.conversationId);
 		}
 		deps.log?.(
 			"turn-error",
 			{
 				reason: silentDrop ? "silent-overcap-drop" : "poisoned-conversation",
-				conversation: outcome.conversationId ?? null,
+				conversation: o.conversationId ?? null,
 			},
 			"error",
 		);
 		// A deadline with no model output is a stall/timeout, not the over-cap
 		// signature: label it by its real cause (the deadline guard's recovered-
 		// answer probe can settle OK with an empty response after the kill).
-		const dropCause = outcome.deadline
+		const dropCause = o.deadline
 			? "the turn hit its time limit and produced no model output"
 			: "the prompt was silently dropped (agy discards prompts past ~25KB with no error)";
-		finalize(
-			stream,
-			blocks,
-			"error",
-			silentDrop
-				? `agy returned success but produced no model output: ${dropCause}. Common cause: a very large pasted prompt. The conversation binding was cleared; retry with a smaller prompt.`
-				: "agy stopped responding on the resumed conversation (no response frame before the deadline; the conversation is dead). The binding was cleared, so the next antigravity turn starts a fresh conversation.",
-		);
+		return silentDrop
+			? `agy returned success but produced no model output: ${dropCause}. Common cause: a very large pasted prompt. The conversation binding was cleared; retry with a smaller prompt.`
+			: "agy stopped responding on the resumed conversation (no response frame before the deadline; the conversation is dead). The binding was cleared, so the next antigravity turn starts a fresh conversation.";
+	};
+	const dropped = droppedTurnError(outcome);
+	if (dropped) {
+		finalize(stream, blocks, "error", dropped);
 		return;
 	}
 	// Gap closer: the result landed while the turn was still live (reentry
@@ -811,7 +822,7 @@ async function runTurnDriver(
 	if (isContinuation && outcome.status === "OK" && !outcome.aborted) {
 		const more = collectStranded();
 		if (more.length > 0) {
-			const conv = redeliveryConversation ?? outcome.conversationId ?? existing?.conversationId ?? null;
+			const conv = outcome.conversationId ?? existing?.conversationId ?? redeliveryConversation ?? null;
 			deps.log?.("escalated-redelivery-turn", { tools: more.map((s) => s.name), conversation: conv }, "info");
 			try {
 				const lateHandle = await deps.driver.run({
@@ -830,6 +841,11 @@ async function runTurnDriver(
 				});
 				if ((await drainTurn(lateHandle)) === "parked") return;
 				outcome = await lateHandle.outcome;
+				const lateDropped = droppedTurnError(outcome);
+				if (lateDropped) {
+					finalize(stream, blocks, "error", lateDropped);
+					return;
+				}
 			} catch (err) {
 				// Release the claims so the next pass can retry the delivery.
 				for (const l of more) if (l.callId) deps.roundTrips.unclaim(l.callId);
@@ -876,8 +892,25 @@ async function runTurnDriver(
 		finalize(stream, blocks, "error", outcome.error ?? "agy turn failed");
 		return;
 	}
-	if (blocks.textIdx === null && outcome.response) {
-		appendText(stream, blocks, outcome.response);
+	// A parked-turn recovery settles OK with the full answer in outcome.response
+	// even when the stream stalled mid-text. Emitting only when nothing had been
+	// streamed discarded the recovered answer in its commonest case.
+	if (outcome.response) {
+		const streamed = blocks.textIdx === null ? "" : textAt(blocks.partial, blocks.textIdx).text;
+		if (outcome.response !== streamed) {
+			if (outcome.response.startsWith(streamed)) {
+				const missing = outcome.response.slice(streamed.length);
+				if (missing) appendText(stream, blocks, missing);
+			} else if (streamed === "") {
+				appendText(stream, blocks, outcome.response);
+			} else {
+				// The recovered answer diverges from the fragment already on screen.
+				// Deltas cannot be retracted, so keep the fragment and emit the
+				// recovered answer as its own block instead of truncating it.
+				closeText(stream, blocks);
+				appendText(stream, blocks, outcome.response);
+			}
+		}
 	}
 	if (blocks.textIdx === null && blocks.thinkingIdx === null) {
 		ensureTextOpen(stream, blocks);
