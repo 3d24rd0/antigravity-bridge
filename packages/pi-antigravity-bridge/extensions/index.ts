@@ -914,7 +914,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				token: r.handle.token,
 				tokenHeader: TOKEN_HEADER,
 			});
-			// --- Approval gate (docs/TODO.md 2.5) ------------------------------
+			// --- Approval gate ------------------------------
 			// agy native tool calls pass through a pi-side approval: a PreToolUse
 			// hook parks in the bridge, the provider emits a shadow toolUse, and
 			// pi's permission extensions gate it like any native call. Off until

@@ -1,5 +1,5 @@
-// Pins for approval-gate hooks.json staging (docs/TODO.md 2.8) and the
-// legacy workspace sweep (issue #5 isolation).
+// Pins for approval-gate hooks.json staging and the legacy workspace sweep
+// (issue #5 isolation).
 //
 // Since the isolation fix, the gate group stages into the session-private
 // per-pid bridge dir (the extra --add-dir only this session's agy gets).

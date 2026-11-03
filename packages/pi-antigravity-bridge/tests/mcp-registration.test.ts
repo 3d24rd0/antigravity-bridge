@@ -1,5 +1,5 @@
-// Pins for per-pid mcp_config.json registration (docs/TODO.md section 1,
-// step 2). The file is shared user config: foreign servers must survive,
+// Pins for per-pid mcp_config.json registration. The file is shared user
+// config: foreign servers must survive,
 // corrupt files must be refused, entries must match the exact shape agy
 // itself writes (captured live 2026-09-07).
 //

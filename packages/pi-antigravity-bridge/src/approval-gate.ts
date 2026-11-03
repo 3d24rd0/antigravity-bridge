@@ -1,4 +1,4 @@
-// Approval-gate shadow tools (docs/TODO.md section 2.5, design v2).
+// Approval-gate shadow tools (design v2).
 //
 // When the approval gate is active, the bridge re-registers pi's mutating
 // builtins (bash, write, edit) as SHADOW tools: same name, same schema plus

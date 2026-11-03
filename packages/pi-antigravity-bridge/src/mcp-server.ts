@@ -74,7 +74,7 @@ export function sweepSettledParks(
 	return swept;
 }
 
-// --- approval gate (docs/TODO.md 2.5) ---------------------------------------
+// --- approval gate ---------------------------------------
 
 /** stdin JSON of a PreToolUse hook, forwarded verbatim by the bundled poll
  *  script. Only toolCall is load-bearing here. */
@@ -110,7 +110,7 @@ export interface McpServerHandle {
 	/** Shared secret for TOKEN_HEADER. Callers that register the bridge with
 	 *  an engine other than the stream-json discovery file need it. */
 	token: string;
-	/** Approval-gate park controls (docs/TODO.md 2.5). */
+	/** Approval-gate park controls. */
 	approvals: ApprovalParkApi;
 	close: () => Promise<void>;
 }
@@ -375,7 +375,7 @@ export async function startMcpServer(
 	const token = crypto.randomUUID();
 	sweepStaleBridgeDirs();
 
-	// --- approval park (docs/TODO.md 2.5) ------------------------------------
+	// --- approval park ------------------------------------
 	// Ticket -> parked approval. A settled ticket STAYS in the map until its
 	// terminal decision is delivered to a poll, so the hook never 404s on the
 	// answer; an unknown/expired ticket 404s and the hook fails closed.

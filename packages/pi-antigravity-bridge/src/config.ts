@@ -52,7 +52,7 @@ export type BridgeTools = "none" | "mcp" | "all";
  *  "off": keep zero-usage. Real server usage (usageSeen latch) always wins. */
 export type UsageEstimate = "estimate" | "direct" | "off";
 
-/** How the approval gate activates (docs/TODO.md section 2.5).
+/** How the approval gate activates.
  *
  *  "auto" (default): OFF until a third-party pi permission extension is
  *  detected (src/approval-detect.ts). When one is found, the gate runs in
@@ -62,7 +62,7 @@ export type UsageEstimate = "estimate" | "direct" | "off";
  *  "shadow" / "dedicated": force the gate on in that shape. "off": never
  *  gate, even when a permission extension is installed. NOTE: "dedicated"
  *  currently stages the same shadow tools as "shadow" (warn-logged remap);
- *  the explicit antigravity_approve variant is planned - see docs/TODO.md. */
+ *  the explicit antigravity_approve variant is planned. */
 export type GateMode = "auto" | "shadow" | "dedicated" | "off";
 
 /** Fallback decision when no extension blocked a gated call: "ask" uses
@@ -190,7 +190,7 @@ export interface AgyConfig {
 	/** Approval gate over agy NATIVE tool calls (create_file, run_command,
 	 *  ...). pi tools agy calls already pass through pi's gates via the G9
 	 *  round-trip; this covers the rest. Default auto (off until a
-	 *  third-party permission extension is detected). See docs/TODO.md 2.5. */
+	 *  third-party permission extension is detected). */
 	approvals: GateConfig;
 }
 
@@ -352,7 +352,7 @@ export function loadConfig(configPath: string = defaultConfigPath()): AgyConfig 
 		DEFAULTS.inactivityTimeoutMin,
 	);
 
-	// Approval gate (docs/TODO.md 2.5). Unknown values fall back to "auto"
+	// Approval gate. Unknown values fall back to "auto"
 	// so a typo can never silently force the gate on.
 	const gateRaw = (process.env.AGY_APPROVALS ?? file.approvals?.gateMode ?? DEFAULTS.approvals.gateMode).toLowerCase();
 	const gateMode: GateMode =

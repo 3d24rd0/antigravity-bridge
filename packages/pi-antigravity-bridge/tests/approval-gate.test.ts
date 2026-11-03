@@ -1,4 +1,4 @@
-// Pins for the approval-gate shadow factory (docs/TODO.md 2.8 V1).
+// Pins for the approval-gate shadow factory (v1).
 // The shadow tool is the load-bearing piece of the approval gate: marker
 // calls must NEVER reach the real builtin, non-marker calls must behave
 // exactly like the builtin, and denials must throw (pi converts thrown

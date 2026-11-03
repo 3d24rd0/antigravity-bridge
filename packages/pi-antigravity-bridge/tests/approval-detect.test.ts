@@ -1,5 +1,4 @@
-// Pins for permission-extension detection + gate-mode resolution
-// (docs/TODO.md 2.8, task: config plumbing + detection).
+// Pins for permission-extension detection + gate-mode resolution.
 //
 // Run: npm test
 

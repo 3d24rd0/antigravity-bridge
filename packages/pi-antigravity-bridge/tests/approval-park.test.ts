@@ -1,4 +1,4 @@
-// Approval-gate park round-trip (docs/TODO.md 2.8): /approval endpoints,
+// Approval-gate park round-trip: /approval endpoints,
 // the provider-side park (onApproval -> shadow toolUse -> decision), and
 // the marker-field strip on real G9 bridge args.
 //

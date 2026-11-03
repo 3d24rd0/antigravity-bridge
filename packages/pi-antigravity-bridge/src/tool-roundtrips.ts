@@ -87,7 +87,7 @@ export function defaultEscalateAfterMs(name: string, extraLongNames: readonly st
 /** Escalated parks carry a longer TTL: human-gated tools (commit previews,
  *  permission dialogs) legitimately block for many minutes. */
 export const ESCALATED_TIMEOUT_MS = 1_800_000;
-/** Human-decision budget for one parked approval (docs/TODO.md 2.5). Same
+/** Human-decision budget for one parked approval. Same
  *  envelope as the G9 park; the staged hook timeout exceeds it with margin
  *  (approval-hook.stagedTimeoutSeconds). Exported: the extension needs the
  *  same number for hooks.json staging and the hook script deadline. */
@@ -396,7 +396,7 @@ export class ToolRoundTrips {
 		this.#approvalPark = api;
 	}
 
-	/** Approval gate (docs/TODO.md 2.5): a PreToolUse hook parked a native agy
+	/** Approval gate: a PreToolUse hook parked a native agy
 	 *  tool call. Interrupt the pi-side view of the still-running agy turn
 	 *  with a toolUse for the SHADOW tool (same bridge_call mechanism as G9,
 	 *  so both drivers pause their turn timers); pi's permission extensions
@@ -594,14 +594,14 @@ export class ToolRoundTrips {
 		if (entry.kind === "approval") {
 			clearTimeout(entry.timer);
 			this.#pending.delete(toolCallId);
-			// Decision mapping (docs/TODO.md 2.5): block/error -> deny with the
+			// Decision mapping: block/error -> deny with the
 			// text (pi turns a tool_call block into an error tool result, so both
 			// paths land here); synthetic success -> allow.
 			const decision: ApprovalDecision = isError
 				? { allow: false, reason: text || `blocked by approval gate (${entry.nativeName})` }
 				: { allow: true };
 			const delivered = this.#approvalPark?.resolve(toolCallId, decision) ?? false;
-			// Audit trail (docs/TODO.md 2.7): decision, source, latency.
+			// Audit trail: decision, source, latency.
 			this.#log(
 				delivered ? "approval-decision" : "approval-late",
 				{

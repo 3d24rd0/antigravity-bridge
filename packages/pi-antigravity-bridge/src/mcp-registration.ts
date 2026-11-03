@@ -1,5 +1,5 @@
-// Per-pid bridge registration for the stream-json engine (docs/TODO.md
-// section 1, step 2). The stream-json agy CLI discovers MCP servers from
+// Per-pid bridge registration for the stream-json engine.
+// The stream-json agy CLI discovers MCP servers from
 // ~/.gemini/config/mcp_config.json (verified live 2026-09-07: a server
 // registered via `agy mcp add --type http` was called by agy through its
 // native call_mcp_tool wrapper, exact entry shape captured from agy's own

@@ -1,5 +1,5 @@
-// Third-party pi permission-extension detection for the approval gate
-// (docs/TODO.md 2.5). The gate defaults to "auto": OFF until one of these
+// Third-party pi permission-extension detection for the approval gate.
+// The gate defaults to "auto": OFF until one of these
 // extensions is present. Detection reads pi's settings (the packages array
 // is the primary, name-exact signal) plus known on-disk config markers for
 // the audited permission packages (sources: ~/tmp/pi-perm-research/, audit
@@ -13,7 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-/** npm names of the audited pi permission packages (docs/TODO.md 2.4). */
+/** npm names of the audited pi permission packages. */
 export const KNOWN_GATE_PACKAGES = [
 	"@gotgenes/pi-permission-system",
 	"@zhushanwen/pi-permission",

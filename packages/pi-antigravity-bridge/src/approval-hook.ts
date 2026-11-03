@@ -1,4 +1,4 @@
-// Staging for the approval-gate hooks.json (docs/TODO.md 2.5).
+// Staging for the approval-gate hooks.json.
 //
 // The agy CLI discovers `.agents/hooks.json` in its --add-dir directories
 // (live-probed 2026-09-22: stream-json and interactive sessions load and
