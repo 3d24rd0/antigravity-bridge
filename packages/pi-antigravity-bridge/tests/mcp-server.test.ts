@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import type { McpServerHandle, McpBridgeDeps } from "../src/mcp-server.js";
 import { bridgeMcpConfigExists, startMcpServer, TOKEN_HEADER } from "../src/mcp-server.js";
+import { bridgeVersion } from "../src/version.js";
 
 let handle: McpServerHandle | null = null;
 
@@ -136,7 +137,7 @@ test("mcp-server: advertises tools.listChanged capability on initialize", async 
 	const payload = JSON.parse(dataLine.slice(5).trim()) as {
 		result?: { serverInfo?: { version?: string }; capabilities?: { tools?: { listChanged?: boolean } } };
 	};
-	assert.equal(payload.result?.serverInfo?.version, "1.0.0");
+	assert.equal(payload.result?.serverInfo?.version, bridgeVersion());
 	assert.equal(payload.result?.capabilities?.tools?.listChanged, true);
 });
 

@@ -32,6 +32,7 @@ import {
 	SUPPORTED_PROTOCOL_VERSIONS,
 } from "@modelcontextprotocol/sdk/types.js";
 import { GATED_AGY_TOOL_SET } from "./approval-hook.js";
+import { bridgeVersion } from "./version.js";
 
 /** Tools we do NOT expose to agy: it would just error (the provider is already
  *  antigravity, so the tool's own guard refuses; advertising it is noise). */
@@ -361,7 +362,7 @@ export async function startMcpServer(
 
 	const makeServer = (signal: AbortSignal) => {
 		const s = new Server(
-			{ name: "pi-antigravity-bridge", version: "1.0.0" },
+			{ name: "pi-antigravity-bridge", version: bridgeVersion() },
 			{ capabilities: { tools: { listChanged: true } } },
 		);
 		s.setRequestHandler(ListToolsRequestSchema, listHandler);
