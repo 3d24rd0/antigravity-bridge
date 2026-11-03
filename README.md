@@ -31,8 +31,8 @@ pi-extensions/
 
 ## Requirements
 
-- **Pi** ≥ 1.0 (`@earendil-works/pi-coding-agent`, `pi-tui`, `pi-ai`, `typebox`
-  are peer dependencies).
+- **Pi** ≥ 1.0 (tested against it; the published peer ranges are `*` for
+  `@earendil-works/pi-coding-agent`, `pi-tui`, `pi-ai`, and `typebox`).
 - **Node** ≥ 22.
 
 Each package documents its own extra requirements — for the bridge, the

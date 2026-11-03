@@ -2,11 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **`/agy` completes with Tab.** Pi autocompletes registered command names only, so everything after `/agy ` was undiscoverable from the editor: `RegisteredCommand` has carried `getArgumentCompletions` all along and the command never used it. Subcommand names complete first (`/agy do` → `doctor`), then the closed value set of the selected one (`/agy mode ` → `accept-edits`, `plan`). Free-form arguments (paths, aliases, ids) complete nothing rather than guessing.
+
+### Changed
+
+- **The `/agy` help text and its completion come from one table** (`src/agy-command-surface.ts`), so the documented usage can no longer drift from the dispatcher. The hand-written description still advertised `engine stream-json|acp` long after `/agy engine` stopped switching engines; the retired `status` entry stays accepted but is no longer listed.
+- Dependencies refreshed: vitest 5.1.0, `@earendil-works/*` 1.5.0, `@modelcontextprotocol/sdk` 1.32.2, TypeScript 7.0.2, `@types/node` 26.6.6. Three unused dev dependencies were dropped, and `npm audit` reports no vulnerabilities.
+
 ## [1.0.0] - 2026-11-02
 
 ### Changed
 
 - Initial public release of `@3d24rd0/pi-antigravity-bridge`.
+- **Numbering restarts at 1.0.0.** The 1.8.x entries below are pre-public iterations of the same code: only `0.0.0-stage` and `1.0.0` ever reached npm, so no published version is newer than this one.
 - **The settings and engine dialogs run on Pi's own TUI kit.** `SettingsList` and `SelectList` from `@earendil-works/pi-tui` replace `@estebanforge/pi-tui-dialogs`, which is no longer a dependency. The `/agy` menu keeps its rows, two-column values, type-to-search and stage-then-save-on-close; the engine picker keeps its intro paragraph and esc-means-decide-later. A dead "Switch engine" row was removed: its Enter resolved the menu with an id nothing consumed.
 - **The row id -> config mapping is a pure function (`applySettingChange`)** so the settings surface is covered by tests without a TUI.
 - **Improve `/agy quota` display fidelity.** Renders model group subtitles (e.g. models included in each group) and handles `disabled: true` quota buckets (e.g. 5-hour limit when weekly limit is reached) with clear explanatory notices instead of rendering a misleading 100% bar.

@@ -17,7 +17,7 @@
 
 | Requirement | Notes |
 |---|---|
-| **Pi** ≥ 1.0 | Peer dependency (`@earendil-works/pi-coding-agent`, `pi-tui`, `pi-ai`, `typebox`). |
+| **Pi** ≥ 1.0 | Tested against Pi 1.0+; the published peer ranges are `*` (`@earendil-works/pi-coding-agent`, `pi-tui`, `pi-ai`, `typebox`). |
 | **Node** ≥ 22 | Uses `AbortSignal.timeout`, `toSorted`, and native `fetch`. |
 | **Antigravity CLI** (`agy`) | Install from [antigravity.google](https://antigravity.google/product/antigravity-cli) and sign in once. Stream-json turns need it; `/agy doctor` reports its version. |
 | Google account with Antigravity access | ACP additionally needs its own sign-in (see below). |
@@ -148,7 +148,7 @@ config file, and is never written back to it.
 | `AGY_MODE` | `accept-edits` \| `plan` | Execution mode. |
 | `AGY_READONLY` | truthy | Refuse provider turns. |
 | `AGY_SKIP_PERMISSIONS` | `1` / `true` | Auto-approve native `agy` tools. |
-| `AGY_APPROVALS` | `auto` \| `shadow` \| `off` | Approval-gate mode (see Safety). |
+| `AGY_APPROVALS` | `auto` \| `shadow` \| `dedicated` \| `off` | Approval-gate mode (see Safety). |
 | `AGY_APPROVALS_MODE` | `ask` \| `allow` \| `deny` | Gate decision policy. |
 | `AGY_BRIDGE_TOOLS` | `all` \| `mcp` \| `none` | Bridge catalog. |
 | `AGY_ASK_TOOL` | truthy | Register `AskAntigravity`. |
@@ -162,6 +162,8 @@ config file, and is never written back to it.
 | `AGY_ACP_BIN` | path | ACP server binary. |
 | `AGY_USAGE_ESTIMATE` | `estimate` \| `direct` \| `off` | How token usage is reported. |
 | `AGY_BIN` | path | `agy` binary to spawn (default: `agy` on `PATH`). |
+| `AGY_EXTRA_ARGS` | raw args | Appended verbatim to every `agy` spawn. |
+| `AGY_AGENTS_ROOT` / `AGY_CONVERSATIONS_DIR` | path | Override the agents discovery root and `agy`'s conversation database. |
 | `AGY_DEBUG` | `1` | Write the full diagnostic trail (default writes errors only). |
 
 ---
@@ -206,18 +208,30 @@ Defaults, stated plainly:
 
 ## Runtime data and logs
 
-Everything persistent lives under one directory:
+The bridge's own state lives under one directory:
 
 ```
 ~/.pi/agent/antigravity-bridge/
-├── config.json           # Settings persisted by /agy
-├── sessions.json         # Pi session <-> agy conversation bindings
-├── models-cache.json     # Cached `agy models` catalog (short TTL)
-├── suppression.json      # Cross-process delegation marker
-├── ask-context/          # Scratch exports used by includeContext
+├── config.json              # Settings persisted by /agy
+├── sessions.json            # Pi session <-> agy conversation bindings
+├── models-cache.json        # Cached `agy models` catalog (short TTL)
+├── suppression.json         # Cross-process delegation marker
+├── acp-auth-verified.json   # ACP sign-in marker (boolean + timestamp, no credential)
+├── ask-context/             # Scratch exports used by includeContext
 └── logs/
-    └── YYYY-MM-DD.ndjson # Daily diagnostic log
+    └── YYYY-MM-DD.ndjson    # Daily diagnostic log
 ```
+
+It also touches five paths outside it. None holds bridge settings, but a full
+uninstall should remove them:
+
+| Path | What |
+|---|---|
+| `~/.local/opt/agy-acp/` | The ACP server binary (~1.5 GB), downloaded on first ACP use. `AGY_ACP_BIN` relocates it. |
+| `~/.gemini/antigravity-acp/` | ACP sign-in state: the auth type written on first setup (`oauth-personal` by default) and the server's own credential files. |
+| `~/.gemini/config/mcp_config.json` | The per-process bridge entry `agy` reads (stream-json only; swept when the process dies). |
+| `~/.gemini/config/agents/pi-bridge-*` | Staged agent files: the system-prompt carrier and the web/delegation reviewers. Removed when the run ends; stale ones swept at startup. |
+| `~/.gemini/antigravity-cli/conversations/` | `agy`'s own conversation database, read for artifacts, task logs, and deadline recovery. Never written. |
 
 - **Privacy:** prompt text and bridge tool arguments are not logged. Error
   strings are redacted (API keys, OAuth tokens, `Authorization`/`Cookie`
