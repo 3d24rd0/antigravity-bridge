@@ -67,7 +67,7 @@ test("cleanup: restore picks the backup matching the installed pi, not the newes
 	// Written last so it is newest by mtime.
 	makeBackup(base, "0.84.4");
 	const r = restorePatch({ root, backupBase: base });
-	assert.equal(r.ok, true, r.reason);
+	assert.equal(r.ok, true, r.reason ?? "restore should succeed");
 	assert.ok(r.backupDir!.includes("0.84.3"));
 	fs.rmSync(base, { recursive: true, force: true });
 });
@@ -97,7 +97,7 @@ test("cleanup: restore copies backup bytes over every patched dist file", () => 
 	const root = makePiRoot(base, VERSION, true);
 	makeBackup(base, VERSION);
 	const r = restorePatch({ root, backupBase: base });
-	assert.equal(r.ok, true, r.reason);
+	assert.equal(r.ok, true, r.reason ?? "restore should succeed");
 	assert.ok(r.restoredFiles.includes("core/agent-session.js"));
 	assert.ok(r.restoredFiles.includes("bundle/cli.js"));
 	for (const rel of FILES) {
