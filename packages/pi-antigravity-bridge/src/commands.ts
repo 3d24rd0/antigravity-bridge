@@ -7,6 +7,7 @@ import {
 	type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { showSettingsMenu, type MenuRow } from "./settings-menu.js";
+import { agyArgumentCompletions, agyUsageLine } from "./agy-command-surface.js";
 import type { AgyModelEntry } from "./models.js";
 import type { SessionStore } from "./sessions.js";
 import type { TurnDriver } from "./driver-types.js";
@@ -176,8 +177,11 @@ function statusText(ctx: AgyCommandCtx): string {
 
 export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
-		description:
-			"Antigravity provider: doctor (health + settings), settings picker, clear sessions. Usage: /agy [doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|readonly on|off|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|agent <name|off>|subagents|quota|artifacts [open <n|name>]|tasks [tail <id>]|bridge all|mcp|none|tools [hide|show <name>|reset]|web on|off|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
+		description: `Antigravity provider: settings picker, health check, ACP auth, sessions. Usage: /agy ${agyUsageLine()}`,
+		// Tab completion for subcommands and their closed value sets. Pi only
+		// completes registered command NAMES, so without this the whole surface
+		// after `/agy ` was undiscoverable from the editor.
+		getArgumentCompletions: (prefix) => agyArgumentCompletions(prefix),
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui && ctx.setActiveUi) ctx.setActiveUi(ui);

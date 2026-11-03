@@ -91,6 +91,10 @@ Settings live in `~/.pi/agent/antigravity-bridge/config.json` and survive
 restarts. `/agy` with no arguments opens the interactive settings menu (same
 options, stage-then-save-on-close).
 
+**Tab completes the surface:** subcommand names first (`/agy do` → `doctor`),
+then the closed value set of the selected one (`/agy mode ` → `accept-edits`,
+`plan`).
+
 ### Settings
 
 | Command | Description |
@@ -118,7 +122,7 @@ options, stage-then-save-on-close).
 | `/agy engine` | Explains that the engine is selected by the model name (`/model`). |
 | `/agy auth` | Prepare the ACP server and open the Google sign-in (browser). |
 | `/agy auth-manual` | Print the manual sign-in steps for headless machines. |
-| `/agy acp-bin [path]` | Show or set the ACP server binary path. |
+| `/agy acp-bin <path \| auto>` | Show or set the ACP server binary path. |
 
 ### Diagnostics
 
@@ -126,8 +130,8 @@ options, stage-then-save-on-close).
 |---|---|
 | `/agy doctor` | Health check: bridge state, driver counters, versions, paths, effective config. |
 | `/agy quota` | Remaining Antigravity subscription quota, per model group. |
-| `/agy tasks` | Background task logs of the current conversation (watch-only). |
-| `/agy artifacts` | Files the current conversation produced or received. |
+| `/agy tasks [tail <id>]` | Background task logs of the current conversation (watch-only). |
+| `/agy artifacts [open <n \| name>]` | Files the current conversation produced or received. |
 | `/agy subagents` | Subagent roster folded from the live turn. |
 | `/agy patch-cleanup` | Restore a Pi install still carrying the removed `pi.invokeTool` patch. |
 
