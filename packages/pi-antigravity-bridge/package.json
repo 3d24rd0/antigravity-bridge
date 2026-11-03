@@ -1,6 +1,6 @@
 {
   "name": "@3d24rd0/pi-antigravity-bridge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Google Antigravity model provider for Pi: Gemini and Claude on your existing subscription, through the official ACP server or the stream-json agy CLI, with Pi tools bridged to the model.",
   "keywords": [
     "pi-package",

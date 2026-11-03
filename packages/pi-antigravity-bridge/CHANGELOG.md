@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.1.0] - 2026-11-03
 
 ### Added
 
@@ -12,6 +12,10 @@ All notable changes to this project will be documented in this file.
 
 - **The `/agy` help text and its completion come from one table** (`src/agy-command-surface.ts`), so the documented usage can no longer drift from the dispatcher. The hand-written description still advertised `engine stream-json|acp` long after `/agy engine` stopped switching engines; the retired `status` entry stays accepted but is no longer listed.
 - Dependencies refreshed: vitest 5.1.0, `@earendil-works/*` 1.5.0, `@modelcontextprotocol/sdk` 1.32.2, TypeScript 7.0.2, `@types/node` 26.6.6. Three unused dev dependencies were dropped, and `npm audit` reports no vulnerabilities.
+
+### Fixed
+
+- **The MCP handshake reports the real version.** `serverInfo.version` was hardcoded to `1.0.0`, so this release would have introduced itself to every MCP client as the previous one. It is now read from `package.json` at load, with a clearly-invalid placeholder (`0.0.0-unknown`) if the manifest is unreadable, and the tests pin the wiring rather than the current number.
 
 ## [1.0.0] - 2026-11-02
 

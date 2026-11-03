@@ -1,6 +1,6 @@
 {
   "name": "@3d24rd0/pi-extensions",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Personal suite of Pi Coding Agent extensions, skills, and prompts",
   "type": "module",
