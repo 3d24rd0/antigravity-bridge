@@ -13,7 +13,6 @@
     "tsBuildInfoFile": "./node_modules/.cache/pi-extensions.tsbuildinfo"
   },
   "include": [
-    "extensions/**/*.ts",
     "src/**/*.ts",
     "tests/**/*.ts"
   ]

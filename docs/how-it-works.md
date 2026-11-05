@@ -46,7 +46,7 @@ Three moving parts:
 
 | Part | File | Job |
 |---|---|---|
-| **Provider** | `src/provider.ts`, `extensions/index.ts` | Registers `antigravity/*` models, turns Pi's request into engine events |
+| **Provider** | `src/provider.ts`, `src/entry.ts` | Registers `antigravity/*` models, turns Pi's request into engine events |
 | **Drivers** | `src/driver.ts` (CLI), `src/acp/driver.ts` (ACP) | Own the child process, the protocol, the turn lifecycle |
 | **Bridge** | `src/mcp-server.ts`, `src/tool-roundtrips.ts` | Serves Pi's tools to the model over a localhost MCP server |
 

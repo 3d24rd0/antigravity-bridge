@@ -145,7 +145,8 @@ npm run check      # tsc --noEmit + vitest
 ```
 
 The package ships TypeScript and Pi loads it directly: no build step, so `src/`
-and `extensions/` are published as written.
+is published as written. Pi finds the entry point through `pi.extensions` in
+`package.json`.
 
 ## Acknowledgements
 
