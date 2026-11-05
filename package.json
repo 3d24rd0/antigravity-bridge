@@ -6,11 +6,14 @@
   "pi": {
     "extensions": [
       "./extensions"
-    ]
+    ],
+    "image": "https://cdn.jsdelivr.net/gh/3d24rd0/antigravity-bridge@main/assets/logo-1024.png"
   },
   "files": [
     "extensions",
     "src",
+    "assets",
+    "docs",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
