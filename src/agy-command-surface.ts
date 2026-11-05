@@ -44,6 +44,11 @@ export const AGY_SUBCOMMANDS: readonly AgySubcommand[] = [
 		values: ["on", "off"],
 	},
 	{ name: "ask", description: "AskAntigravity delegation tool", usage: "ask on|off", values: ["on", "off"] },
+	{
+		name: "stop",
+		description: "stop a background AskAntigravity run",
+		usage: "stop [runId-prefix]",
+	},
 	{ name: "model", description: "AskAntigravity default model", usage: "model <alias>" },
 	{
 		name: "thinking",

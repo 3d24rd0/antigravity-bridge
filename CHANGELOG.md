@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`AskAntigravity` supports background runs.** `background: true` returns a `bg_` run id at once and the detached `agy -p` keeps going without Pi's per-call abort signal, so Esc no longer touches it. When the run settles, the full answer arrives as one `pi.sendMessage` message (`ask-antigravity-result`, secret-redacted, marked UNTRUSTED, `triggerTurn`) carrying the `conversationId` resume handle. Settling is once-only and happens on stream close, not process exit. New `/agy stop [runId-prefix]` ends a run (no argument: the only running one) and refuses with "already finished; its result is being delivered" while a finished answer is being delivered. One shared registry caps concurrency at 4 and holds one run per `conversationId`, blocking calls included; `session_shutdown` kills in-flight runs silently; `print`/`json` mode refuses background.
+
+### Changed
+
+- Blocking and background runs share one spawn/settle lifecycle, so the delegation-suppression window now spans the whole run (a background run outlives the tool call) and releases exactly once at run end. stdout/stderr buffers are capped at 1M/64k so a long run cannot grow memory.
+
 ## [1.2.0]
 
 ### Added

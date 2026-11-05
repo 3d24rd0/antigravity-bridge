@@ -103,7 +103,7 @@ and **Tab completes them**:
 
 ```
 /agy  doctor  auth  auth-manual  quota  clear  patch-cleanup
-      mode  readonly  permissions  timeout  ask  web  bridge  tools
+      mode  readonly  permissions  timeout  ask  stop  web  bridge  tools
       digest  system-prompt  model  thinking  agent
       tasks  artifacts  subagents  engine  acp-bin
 ```
@@ -114,9 +114,21 @@ and **Tab completes them**:
 /agy permissions on|off          # native agy tool auto-approval
 /agy timeout <1-1440|off>        # overall turn cap
 /agy bridge all|mcp|none         # which Pi tools the model can call
+/agy stop [runId-prefix]         # stop a running background AskAntigravity run
 /agy tasks [tail <id>]           # background task logs of this conversation
 /agy artifacts [open <n|name>]   # files this conversation produced or received
 ```
+
+### Background delegations
+
+`AskAntigravity` is blocking by default. With `background: true` the call
+returns a `bg_` run id at once and the detached `agy -p` keeps running: Esc does
+not kill it, and when it settles the full answer arrives as one message marked
+UNTRUSTED and carrying the `conversationId` resume handle. Up to four runs at a
+time, one per conversation, and `/agy stop` ends one (no argument = the only
+running one). A background run lives and dies with the Pi session: `/new`,
+`/resume`, `/fork` and `/reload` kill it silently, and `print`/`json` mode
+refuses it because the process exits before the answer could arrive.
 
 Full reference, every flag and every environment variable:
 **[docs/how-it-works.md](docs/how-it-works.md)**.

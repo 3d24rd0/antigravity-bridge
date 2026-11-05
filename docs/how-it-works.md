@@ -149,6 +149,7 @@ Tab completes the surface: subcommands first, then their closed value sets.
 | `/agy thinking low \| medium \| high` | Default reasoning level for `AskAntigravity` |
 | `/agy model <slug>` | Default model for `AskAntigravity` |
 | `/agy ask on \| off` | Register the `AskAntigravity` delegation tool |
+| `/agy stop [runId-prefix]` | Stop a background `AskAntigravity` run (no argument: the only running one) |
 | `/agy web on \| off` | Register `agy_web_search` / `agy_read_url` for any provider |
 | `/agy bridge all \| mcp \| none` | Which Pi tools the bridge exposes |
 | `/agy tools [hide \| show <name> \| reset]` | Per-session catalog filtering |
@@ -211,6 +212,21 @@ and is never written back to it.
 `agy` turn so you can delegate without switching models. Plan-mode delegations
 stage an agent whose toolset has no file-editing tools: the constraint is a
 toolset, not a prompt.
+
+`background: true` turns that into a delegated run. The call returns a `bg_` run
+id immediately, the detached `agy -p` continues without Pi's per-call abort
+signal (Esc cannot kill it), and the run settles once - on stream close, not
+process exit, so a late write from a child of `agy` is not truncated. The full
+answer then arrives as a single `pi.sendMessage` custom message
+(`ask-antigravity-result`, `triggerTurn`) that is secret-redacted, tagged
+UNTRUSTED because it reaches the model at user-role authority, and carries the
+`conversationId` resume handle. Limits: four concurrent runs; one run per
+`conversationId` (blocking calls included, since two turns inside one agy
+conversation interleave); stdout and stderr buffers capped at 1M and 64k so a
+long run cannot grow memory. `session_shutdown` kills in-flight runs silently
+(`/new`, `/resume`, `/fork`, `/reload` all fire it), and `print`/`json` mode
+refuses background because the process exits before the wake could arrive. The
+MCP-suppression window spans the whole run and releases once, at run end.
 
 ## Runtime data
 

@@ -42,6 +42,7 @@ import { ensureAcpReady, inspectAcpSetup } from "./acp/setup.js";
 import { runAcpAuth } from "./acp/auth.js";
 import { patchStatus, restorePatch } from "./patch-cleanup.js";
 import { withDialogLock } from "./dialog-lock.js";
+import { stopBackgroundRun } from "./ask-background.js";
 
 /** Shared body for every ACP-login-pending moment */
 export function acpLoginPending(): string {
@@ -170,7 +171,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		`  sessions:      ${ctx.store.size} bound`,
 		`  config:        ${CONFIG_PATH}`,
 		"",
-		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy timeout <1-1440|off>, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear, /agy doctor",
+		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy stop [runId-prefix], /agy model <alias>, /agy thinking low|medium|high, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy timeout <1-1440|off>, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear, /agy doctor",
 	].join("\n");
 }
 
@@ -711,6 +712,12 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				} else {
 					ui?.notify(`AskAntigravity model: ${loadConfig().defaultModel} (fallback; callers may override per call)\nusage: /agy model flash|argon|gemini|sonnet|opus|<exact>`, "info");
 				}
+				return;
+			}
+			if (sub === "stop") {
+				// Background AskAntigravity runs. No argument stops the only running
+				// one; a prefix names it. State lives in ask-background.ts.
+				ui?.notify(stopBackgroundRun(pi, (args ?? "").trim().split(/\s+/).slice(1).join(" ")), "info");
 				return;
 			}
 			if (sub === "ask") {
