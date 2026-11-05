@@ -40,6 +40,7 @@ async function runDriver(
 		onPermissionRequest?: AcpPermissionHandler;
 		permissionParkMs?: number;
 		signal?: AbortSignal;
+		onLogPath?: (logPath: string) => void;
 		onHandle?: (
 			handle: Awaited<ReturnType<AcpDriver["run"]>>,
 			driver: AcpDriver,
@@ -48,6 +49,9 @@ async function runDriver(
 ): Promise<DriverRun> {
 	const dir = tmpDir();
 	const logPath = path.join(dir, "fake-log.jsonl");
+	// Exposed before the first await so a test can watch the fake's request log
+	// instead of sleeping a fixed number of milliseconds and hoping.
+	opts.onLogPath?.(logPath);
 	const driver = new AcpDriver({
 		bin: process.execPath,
 		binArgs: [FAKE_SERVER],
@@ -99,6 +103,19 @@ function textOf(activities: DriverActivity[]): string {
 		.filter((a): a is Extract<DriverActivity, { type: "text" }> => a.type === "text")
 		.map((a) => a.delta)
 		.join("");
+}
+
+/** Wait until the fake server has received `method`. Wall-clock sleeps are not
+ *  evidence that a turn started: under parallel load the driver can still be in
+ *  setup when a 400 ms timer fires, and an abort then takes the direct-teardown
+ *  branch (`promptStarted === false`) instead of probing session/cancel. */
+async function waitForRequest(logPath: string, method: string, timeoutMs = 5_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (sentRequests(logPath).some((r) => r.method === method)) return;
+		await new Promise((r) => setTimeout(r, 10));
+	}
+	throw new Error(`fake server never received ${method} (log: ${logPath})`);
 }
 
 function sentRequests(logPath: string): Array<Record<string, unknown>> {
@@ -372,9 +389,17 @@ describe("acp/driver permission parking", () => {
 describe("acp/driver Gate D abort", () => {
 	test("cancel-unsupported (-32601) falls back to teardown and reports aborted", async () => {
 		const controller = new AbortController();
-		const started = runDriver("cancel-unsupported", { prompt: "count", signal: controller.signal });
-		// Give the fake a moment to start streaming, then abort.
-		await new Promise((r) => setTimeout(r, 400));
+		let logPath = "";
+		const started = runDriver("cancel-unsupported", {
+			prompt: "count",
+			signal: controller.signal,
+			onLogPath: (p) => {
+				logPath = p;
+			},
+		});
+		// Abort only once the prompt is on the wire: that is what makes the turn
+		// "started" for the cancel probe.
+		await waitForRequest(logPath, "session/prompt");
 		controller.abort();
 		const run = await started;
 		const outcome = await run.handle.outcome;
@@ -423,7 +448,10 @@ describe("acp/driver Gate D abort", () => {
 			prompt: "park me",
 			signal: controller.signal,
 		});
-		await new Promise((r) => setTimeout(r, 400));
+		// Same rule as the test above: wait for the prompt to reach the fake, not
+		// for a timer. A pre-prompt abort tears down without probing cancel, which
+		// is why this used to fail under parallel load.
+		await waitForRequest(path.join(dir, "log.jsonl"), "session/prompt");
 		controller.abort();
 		const outcome = await handle.outcome;
 		assert.equal(outcome.aborted, true);
