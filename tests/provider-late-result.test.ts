@@ -92,12 +92,17 @@ function toolResultMessage(callId: string, text: string, isError = false): Messa
 
 /** Run one scripted turn through streamSimple; returns the driver request the
  *  provider handed over plus any error events. */
-function makeStreamSimple(driver: StreamDriver, rt: ToolRoundTrips) {
+function makeStreamSimple(
+	driver: StreamDriver,
+	rt: ToolRoundTrips,
+	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void,
+) {
 	return createStreamSimple({
 		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
 		store: new SessionStore(tmpStorePath()),
 		driver,
 		roundTrips: rt,
+		log,
 	});
 }
 
@@ -193,6 +198,29 @@ test("late delivery: tombstone is single-shot, the same context then errors as a
 	assert.equal(seen.opts, undefined);
 	assert.equal(errors2.length, 1);
 	assert.equal(errors2[0].errorMessage, "No user message to send to agy.");
+});
+
+test("the empty-turn guard logs at error level, so the error-only daily log records it", async () => {
+	// Upstream hit the same guard logged at debug, and a stall that lasted hours
+	// left no trace in the error-only daily log. The level is the observable part.
+	const seen: { opts?: DriverTurnRequest } = {};
+	const driver = fakeDriver(seen);
+	const rt = new ToolRoundTrips(driver);
+	const logged: Array<{ event: string; level?: string }> = [];
+	const context: TranscriptContext = normalizeContext({
+		systemPrompt: undefined,
+		messages: [toolResultMessage("call-9", "output")],
+	});
+	const streamSimple = makeStreamSimple(driver, rt, (event, _data, level) => logged.push({ event, level }));
+
+	const errors = await collect(
+		streamSimple(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions),
+	);
+	assert.equal(errors[0].errorMessage, "No user message to send to agy.");
+	assert.deepEqual(
+		logged.filter((l) => l.event === "turn-error").map((l) => l.level),
+		["error"],
+	);
 });
 
 test("late delivery: a queued user message rides along with the late result", async () => {

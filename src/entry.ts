@@ -81,6 +81,7 @@ import { listAgyTasks, tailAgyTaskLog } from "./tasks.js";
 import { showTasksBrowser } from "./tasks-ui.js";
 import { agyConversationDir } from "./agy-paths.js";
 import { createDailyLogger, type DailyLogger } from "./daily-log.js";
+import { engineSettingsPaths, ensureSendImmediately } from "./engine-settings.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "./ask-tool.js";
 import { registerWebTools } from "./web-tools.js";
 import { bridgeMcpConfigDir, startMcpServer, TOKEN_HEADER, type McpServerHandle } from "./mcp-server.js";
@@ -203,6 +204,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	);
 
 	const store = new SessionStore();
+	// Antigravity buffers user input until the turn ends unless its own settings
+	// say otherwise, and Pi sends interactive input mid-turn. Additive and atomic:
+	// an explicit user value, or a file we cannot parse, is left alone.
+	for (const settingsPath of engineSettingsPaths()) {
+		const outcome = ensureSendImmediately(settingsPath);
+		if (outcome !== "already-set") fileLog.log("engine-settings", { path: settingsPath, outcome }, "debug");
+	}
 	// MCP bridge handle, declared early: the ACP engine reads the bridge port
 	// at session/new / session/load time.
 	let mcpHandle: McpServerHandle | null = null;

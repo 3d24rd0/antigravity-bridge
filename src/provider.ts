@@ -625,7 +625,7 @@ async function runTurnDriver(
 		// when there is nothing at all to send (no text, no images, no late
 		// tool results to deliver).
 		if (!prompt && images.length === 0 && late.length === 0) {
-			deps.log?.("turn-error", { reason: "no-user-message" }, "debug");
+			deps.log?.("turn-error", { reason: "no-user-message" }, "error");
 			finalize(stream, blocks, "error", "No user message to send to agy.");
 			return;
 		}

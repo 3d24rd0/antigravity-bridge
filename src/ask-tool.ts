@@ -290,7 +290,7 @@ export async function registerAskAntigravityTool(
 			}
 			return new Text(text, 0, 0);
 		},
-		renderResult(result, { expanded, isPartial }, theme) {
+		renderResult(result, { expanded, isPartial }, theme, context) {
 			const d = result.details as AgyDetails | undefined;
 			if (isPartial) {
 				const status = result.content[0]?.type === "text" ? result.content[0].text : "working...";
@@ -298,8 +298,7 @@ export async function registerAskAntigravityTool(
 			}
 
 			const body = result.content[0]?.type === "text" ? result.content[0].text : "";
-			const errored =
-		d?.exitCode !== 0 || !!d?.aborted || !!d?.timedOut || !!d?.empty;
+			const errored = askResultErrored(d);
 
 			let text = errored
 				? theme.fg("error", "✗ AskAntigravity error")
@@ -320,7 +319,7 @@ export async function registerAskAntigravityTool(
 				const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
 				if (lines.length) text += `\n${theme.fg("toolOutput", lines.join("\n"))}`;
 				if (body.length > PREVIEW_MAX_CHARS || body.split("\n").length > PREVIEW_MAX_LINES) {
-					text += `\n${theme.fg("dim", `… (${keyHint("app.tools.expand", "to expand")})`)}`;
+					text += `\n${theme.fg("dim", `… (${expandHint(context)})`)}`;
 				}
 			}
 			return new Text(text, 0, 0);
@@ -336,7 +335,7 @@ export async function registerAskAntigravityTool(
 							text: "Error: AskAntigravity cannot be used when the active provider is already antigravity - you're already running through it.",
 						},
 					],
-					details: emptyDetails(),
+					details: refusalDetails(),
 				};
 			}
 
@@ -353,7 +352,7 @@ export async function registerAskAntigravityTool(
 							text: 'readOnly is on: AskAntigravity is refused (fail-closed; the agy CLI has no review-only enforcement, google-antigravity/antigravity-cli#1181). Run /agy readonly off to use this tool.',
 						},
 					],
-					details: emptyDetails(),
+					details: refusalDetails(),
 				};
 			}
 			// Background refusal (fail-closed): a wake from this tool would land in
@@ -369,7 +368,7 @@ export async function registerAskAntigravityTool(
 							text: 'background is not supported by the bridge\'s AskAntigravity: the answer must return synchronously to the caller. Long delegations are already covered by the bridge\'s own async flow (early-ack + bridge_poll_result); for an unattended peer run, launch agy directly in a terminal instead. Call again without background.',
 						},
 					],
-					details: emptyDetails(),
+					details: refusalDetails(),
 				};
 			}
 			const requestedModel = (params.model as string | undefined) ?? config.defaultModel;
@@ -381,7 +380,7 @@ export async function registerAskAntigravityTool(
 							text: `model value "${params.model}" starts with "-" - not a valid model id.`,
 						},
 					],
-					details: emptyDetails(requestedModel),
+					details: refusalDetails(requestedModel),
 				};
 			}
 			if (
@@ -396,7 +395,7 @@ export async function registerAskAntigravityTool(
 							text: "thinking and effort are synonyms for the same knob - pass one, not both with different values.",
 						},
 					],
-					details: emptyDetails(requestedModel),
+					details: refusalDetails(requestedModel),
 				};
 			}
 			const thinkingArg = (params.thinking as string | undefined) ?? (params.effort as string | undefined);
@@ -415,13 +414,13 @@ export async function registerAskAntigravityTool(
 				if (!stat.isDirectory()) {
 					return {
 						content: [{ type: "text", text: `cwd is not a directory: ${cwd}` }],
-						details: emptyDetails(requestedModel, resolved.model),
+						details: refusalDetails(requestedModel, resolved.model),
 					};
 				}
 			} catch {
 				return {
 					content: [{ type: "text", text: `cwd does not exist: ${cwd}` }],
-					details: emptyDetails(requestedModel, resolved.model),
+					details: refusalDetails(requestedModel, resolved.model),
 				};
 			}
 
@@ -431,7 +430,7 @@ export async function registerAskAntigravityTool(
 				// timeout (Node clamps to 1ms) and kill the peer instantly.
 				return {
 					content: [{ type: "text", text: `timeoutMinutes must be a positive number of minutes up to ${MAX_TIMEOUT_MINUTES} (for example 0.5 for 30 seconds).` }],
-					details: emptyDetails(requestedModel, resolved.model),
+					details: refusalDetails(requestedModel, resolved.model),
 				};
 			}
 
@@ -857,11 +856,13 @@ interface AgyDetails {
 	// Exit 0 with no answer on stdout (the empty-output failure branch).
 	// renderResult flips to the error glyph on it.
 	empty?: boolean;
+	/** Pre-run refusal or validation error: nothing ran, so no success glyph. */
+	refused?: boolean;
 	durationMs: number;
 	stderr: string;
 }
 
-function emptyDetails(
+function refusalDetails(
 	model: string | null = null,
 	resolvedModel: string | null = null,
 	thinking: ThinkingTier | null = null,
@@ -878,7 +879,30 @@ function emptyDetails(
 		exitCode: 0,
 		aborted: false,
 		timedOut: false,
+		refused: true,
 		durationMs: 0,
 		stderr: "",
 	};
+}
+
+/** True when the result row must show the error glyph. A refusal or a validation
+ *  error never ran, so it must not render as a success. */
+export function askResultErrored(d: Pick<AgyDetails, "exitCode" | "aborted" | "timedOut" | "empty" | "refused"> | undefined): boolean {
+	return d?.exitCode !== 0 || !!d?.aborted || !!d?.timedOut || !!d?.empty || !!d?.refused;
+}
+
+/** Resolve the expand hint from the render context when Pi injects one.
+ *  Pi 1.5 blinds an imported keyHint (an import may resolve to another copy of
+ *  pi-coding-agent, which cannot see the host keybindings), so prefer the
+ *  injected one and fall back to the import for Pi 1.4, which has neither. */
+export function expandHint(context?: { keyHint?: typeof keyHint }): string {
+	if (context?.keyHint) return context.keyHint("app.tools.expand", "to expand");
+	try {
+		return keyHint("app.tools.expand", "to expand");
+	} catch {
+		// The imported helper reads the interactive theme and throws outside it
+		// (headless renders, tests). The description alone still tells the reader
+		// what the key would do, which beats failing the render.
+		return "to expand";
+	}
 }

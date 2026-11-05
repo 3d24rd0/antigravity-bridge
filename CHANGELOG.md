@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.1]
+
+### Fixed
+
+- The AskAntigravity expand hint comes from the render context, so Pi 1.5 no longer hides the key; on Pi 1.4, or outside an interactive theme, it degrades to the plain description instead of throwing.
+- Refusals and validation errors render with the error glyph instead of a success checkmark.
+- An empty turn logs at error level, so the error-only daily log records the stall.
+
+### Changed
+
+- Both engines get `queuedMessages: "send-immediately"` in their own settings.json when the key is absent, so input typed mid-turn is not buffered until the turn ends. Additive, atomic, an explicit user value wins, and an unparseable file is never touched.
+
 ## [1.1.0]
 
 ### Added
