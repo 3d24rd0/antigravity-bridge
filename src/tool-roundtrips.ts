@@ -573,8 +573,8 @@ export class ToolRoundTrips {
 
 	/** Complete a parked call from a pi toolResult message. Returns false when
 	 *  the id matches nothing pending. Image blocks ride the result on both
-	 *  engines (probe-verified on each); the late-delivery prompt stays
-	 *  text-only (see PI-BRIDGE-GAPS). */
+	 *  engines (probe-verified on each), and a late delivery carries them too:
+	 *  the text alone would leave the model hunting for OCR tools. */
 	resolve(
 		toolCallId: string,
 		text: string,
@@ -686,6 +686,9 @@ export interface LateToolResult {
 	reason: string;
 	text: string;
 	isError: boolean;
+	/** Images the parked call produced. The reply text alone loses them, and a
+	 *  model that expected a screenshot then hunts for OCR tools instead. */
+	images?: Array<{ data: string; mimeType: string }>;
 }
 
 /** Frame late tool results so agy treats them as the results its bridge calls

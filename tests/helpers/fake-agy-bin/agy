@@ -50,6 +50,16 @@ case "$_line" in
     sleep 0.2
     exit 0
     ;;
+  *"written to disk"*)
+    # Image staging test: the driver must append the staging note to the prompt.
+    printf '%s
+' '{"event":"init","init":{"conversation_id":"conv-img"}}'
+    sleep 0.1
+    printf '%s
+' '{"event":"result","result":{"status":"SUCCESS","response":"NOTE-SEEN"}}'
+    sleep 0.1
+    exit 0
+    ;;
   *ECHO-SYSTEM-MESSAGE*)
     # Gemini echoes agy's own background-task notification back as answer text.
     # The delta split lands INSIDE the marker, which is the case a

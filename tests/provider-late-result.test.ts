@@ -80,11 +80,19 @@ async function parkAndFail(rt: ToolRoundTrips, callId: string, name: string, rea
 	return settled;
 }
 
-function toolResultMessage(callId: string, text: string, isError = false): Message {
+function toolResultMessage(
+	callId: string,
+	text: string,
+	isError = false,
+	images: Array<{ data: string; mimeType: string }> = [],
+): Message {
 	return {
 		role: "toolResult",
 		toolCallId: callId,
-		content: [{ type: "text", text }],
+		content: [
+			...images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType })),
+			{ type: "text", text },
+		],
 		isError,
 		timestamp: Date.now(),
 	} as unknown as Message;
@@ -221,6 +229,24 @@ test("the empty-turn guard logs at error level, so the error-only daily log reco
 		logged.filter((l) => l.event === "turn-error").map((l) => l.level),
 		["error"],
 	);
+});
+
+test("late delivery carries the images the parked call produced", async () => {
+	// Upstream saw this live: a screenshot result was re-delivered as text only,
+	// the model never polled, and it fell back to hunting OCR libraries.
+	const seen: { opts?: DriverTurnRequest } = {};
+	const driver = fakeDriver(seen);
+	const rt = new ToolRoundTrips(driver);
+	await parkAndFail(rt, "call-img", "Read", "expired");
+	const image = { data: Buffer.from("pixels").toString("base64"), mimeType: "image/png" };
+	const context: TranscriptContext = normalizeContext({
+		systemPrompt: undefined,
+		messages: [toolResultMessage("call-img", "a screenshot", false, [image])],
+	});
+
+	await collect(makeStreamSimple(driver, rt)(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions));
+	assert.ok(seen.opts, "driver.run was called for the late delivery");
+	assert.deepEqual(seen.opts.images, [image]);
 });
 
 test("late delivery: a queued user message rides along with the late result", async () => {

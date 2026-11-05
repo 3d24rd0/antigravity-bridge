@@ -381,9 +381,10 @@ export interface ToPiModelOptions {
 }
 
 /** Project an agy entry to pi's Model shape. `input` advertises accepted
- *  inputs: text-only (default) or text+image. The ACP engine forwards image
- *  blocks natively (probe 2026-09-03); the stream-json CLI prompt is text-only, so
- *  the extension decides by engine at load time. */
+ *  inputs: text-only (default) or text+image. Both engines accept images now:
+ *  ACP forwards the blocks natively (probe 2026-09-03), and the stream-json
+ *  prompt is text-only, so the driver stages the pixels on disk and points the
+ *  model at them. */
 export function toPiModel(
 	entry: AgyModelEntry,
 	input: Array<"text" | "image"> = ["text"],
@@ -426,9 +427,9 @@ export function expandAgyModels(entries: readonly AgyModelEntry[]): Model<Api>[]
 		const supportsAcp = isAcpCapableModel(e);
 		if (supportsAcp) {
 			out.push(toPiModel(e, ["text", "image"], { engineSuffix: "acp", engineLabel: "ACP" }));
-			out.push(toPiModel(e, ["text"], { engineSuffix: "cli", engineLabel: "CLI" }));
+			out.push(toPiModel(e, ["text", "image"], { engineSuffix: "cli", engineLabel: "CLI" }));
 		} else {
-			out.push(toPiModel(e, ["text"], { engineSuffix: "cli", engineLabel: "CLI" }));
+			out.push(toPiModel(e, ["text", "image"], { engineSuffix: "cli", engineLabel: "CLI" }));
 		}
 	}
 	return out;

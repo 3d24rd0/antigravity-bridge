@@ -78,12 +78,12 @@ the engine; Pi's thinking toggle picks the reasoning level.
 |---|---|---|---|
 | `antigravity/gemini-4-argon-acp` | ACP | text + image | Deep reasoning, native diff cards |
 | `antigravity/gemini-3-8-flash-acp` | ACP | text + image | Low latency, light quota use |
-| `antigravity/gemini-4-argon-cli` | CLI | text | Same model, stream-json engine |
-| `antigravity/gemini-3-8-flash-cli` | CLI | text | Fast execution |
-| `antigravity/claude-sonnet-5-5-cli` | CLI | text | Balanced speed and quality |
-| `antigravity/claude-opus-5-5-cli` | CLI | text | Advanced Claude reasoning |
+| `antigravity/gemini-4-argon-cli` | CLI | text + image | Same model, stream-json engine |
+| `antigravity/gemini-3-8-flash-cli` | CLI | text + image | Fast execution |
+| `antigravity/claude-sonnet-5-5-cli` | CLI | text + image | Balanced speed and quality |
+| `antigravity/claude-opus-5-5-cli` | CLI | text + image | Advanced Claude reasoning |
 
-Claude models are CLI-only: the ACP server rejects non-Gemini models.
+Claude models are CLI-only: the ACP server rejects non-Gemini models. On the CLI engine the prompt carries text only, so an attached image is staged on disk and the model is pointed at it.
 
 **2. Check the wiring once.**
 

@@ -367,12 +367,15 @@ test("expandAgyModels: expands Gemini to both ACP and CLI, Claude to CLI only", 
 	const argonCli = models.find((m) => m.id === "gemini-4-argon-cli");
 	assert.ok(argonCli);
 	assert.equal(argonCli?.name, "gemini-4-argon (CLI)");
-	assert.deepEqual(argonCli?.input, ["text"]);
+	// The CLI prompt is text-only, so the driver stages pixels on disk; the model
+	// is told where they are. Advertising text-only made pi refuse the image
+	// before the bridge ever saw it.
+	assert.deepEqual(argonCli?.input, ["text", "image"]);
 
 	const claudeCli = models.find((m) => m.id === "claude-sonnet-5-5-cli");
 	assert.ok(claudeCli);
 	assert.equal(claudeCli?.name, "claude-sonnet-5-5 (CLI)");
-	assert.deepEqual(claudeCli?.input, ["text"]);
+	assert.deepEqual(claudeCli?.input, ["text", "image"]);
 });
 
 test("parseModelEngine: extracts baseId and forcedEngine", () => {

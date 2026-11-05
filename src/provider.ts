@@ -521,7 +521,7 @@ async function runTurnDriver(
 	if (!isContinuation) {
 		for (const r of collectToolResults(context.messages, deps.roundTrips.deadIds)) {
 			const dead = deps.roundTrips.consumeDead(r.toolCallId);
-			if (dead) late.push({ name: dead.name, reason: dead.reason, text: r.text, isError: r.isError });
+			if (dead) late.push({ name: dead.name, reason: dead.reason, text: r.text, isError: r.isError, images: r.images });
 		}
 		if (late.length > 0) {
 			deps.log?.("late-result", { tools: late.map((l) => l.name), freshConversation: !existing?.conversationId }, "info");
@@ -548,6 +548,7 @@ async function runTurnDriver(
 				reason: "you never received this result: you ended your turn without calling bridge_poll_result",
 				text: view.text ?? "(no output)",
 				isError: view.isError ?? false,
+				images: view.images,
 			};
 		});
 
@@ -700,7 +701,7 @@ async function runTurnDriver(
 				// lands in the conversation that asked for it.
 				conversationId: existing?.conversationId ?? redeliveryConversation ?? null,
 				prompt: fullPrompt,
-				images: images.length > 0 ? images : undefined,
+				images: images.length > 0 || late.length > 0 ? [...images, ...late.flatMap((l) => l.images ?? [])] : undefined,
 				agent,
 				contextBlock: embeddedDigest
 					? {
@@ -835,6 +836,7 @@ async function runTurnDriver(
 					inactivityMin: config.inactivityTimeoutMin,
 					conversationId: conv,
 					prompt: buildLateResultPrompt(more),
+					images: more.flatMap((m) => m.images ?? []).length > 0 ? more.flatMap((m) => m.images ?? []) : undefined,
 					agent: config.agent ?? (conv ? stagedAgentByConversation.get(conv) : undefined),
 					signal: options?.signal,
 					contextInputTokens,

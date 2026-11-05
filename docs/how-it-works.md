@@ -68,6 +68,9 @@ terminal result.
 - Carries Pi's system prompt as a staged **agent file** (`--agent`), not on the
   command line: the CLI silently drops any single prompt past ~25 KB, and an
   inline system block routinely crossed that cap.
+- The prompt is text-only, so an attached image is staged on disk (0600, one
+directory per turn, removed when the turn settles) and the model is told to read
+  it with the bridge's `read` tool.
 
 ### ACP (`-acp`)
 

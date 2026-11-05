@@ -83,6 +83,35 @@ describe("stream-json driver: echoed system messages", () => {
 	});
 });
 
+describe("stream-json driver: image staging", () => {
+	test("the prompt points the model at the staged files", async () => {
+		// The CLI turn input is text-only, so the pixels have to reach the model
+		// some other way. The fake answers NOTE-SEEN only when the staging note
+		// actually made it onto the wire.
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "hi",
+			images: [{ data: Buffer.from("png-bytes").toString("base64"), mimeType: "image/png" }],
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const draining = (async () => {
+			for (;;) {
+				if ((await handle.next()) === null) return;
+			}
+		})();
+		const outcome = await handle.outcome;
+		await draining;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.response, "NOTE-SEEN");
+	});
+});
+
 describe("stream-json driver frame ceiling", () => {
 	test("a no-newline flood over the frame cap fails the turn instead of buffering forever", async () => {
 		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;

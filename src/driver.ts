@@ -24,6 +24,7 @@ import { parkedTurnAnswer } from "./parked-turn.js";
 import { redactText } from "./redact.js";
 import { installProcessCleanup, signalExitCode } from "./process-cleanup.js";
 import { SystemMessageSanitizer } from "./stream-sanitizer.js";
+import { type StagedImages, imagesUnavailableNote, stagePromptImages } from "./prompt-images.js";
 import type {
 	AgyUsage,
 	DriverActivity,
@@ -119,6 +120,8 @@ interface ActiveTurn {
 	response: string;
 	/** Strips echoed <SYSTEM_MESSAGE> blocks before they reach the transcript. */
 	sanitizer: SystemMessageSanitizer;
+	/** Per-turn image staging; removed when the turn settles. */
+	stagedImages?: StagedImages;
 	usage?: AgyUsage;
 	conversationId?: string;
 	/** Wall clock at turn creation; the parked-turn probe filters
@@ -334,9 +337,22 @@ export class StreamDriver implements TurnDriver {
 		});
 		this.#armTimers(turn);
 
+		// This engine cannot carry pixels: stage them and point the model at the
+		// files, or say plainly that they could not be delivered.
+		let content = request.prompt;
+		if (request.images?.length) {
+			try {
+				const staged = stagePromptImages(request.images);
+				turn.stagedImages = staged;
+				content = `${request.prompt}\n\n${staged.note}`;
+			} catch (err) {
+				this.#log("image-staging-failed", { message: err instanceof Error ? err.message : String(err) });
+				content = `${request.prompt}\n\n${imagesUnavailableNote(request.images.length)}`;
+			}
+		}
 		const line = `${JSON.stringify({
 			event: "user",
-			message: { role: "user", content: request.prompt },
+			message: { role: "user", content },
 		})}\n`;
 		const stdin = this.#child?.stdin;
 		try {
@@ -696,6 +712,7 @@ export class StreamDriver implements TurnDriver {
 		if (turn.closed) return;
 		// Fail open: anything the sanitizer still holds is real text unless it
 		// turns out to be an unterminated block.
+		turn.stagedImages?.cleanup();
 		const tail = turn.sanitizer.flush();
 		if (tail) {
 			turn.response += tail;
