@@ -38,14 +38,27 @@ protocol. This package puts a provider in between:
 
 ## Install
 
+**Pi**
+
 ```bash
 pi install npm:@3d24rd0/pi-antigravity-bridge
 ```
 
-Then restart Pi. `/agy` appears in the command list and `antigravity/` models
-appear in `/model`. Requires **Node ≥ 22** and the
+**Gentle Shell** — it keeps its packages in its own home, separate from Pi's, so
+add the entry there (`gentle-shell home` prints the path):
+
+```jsonc
+// ~/.gentle-shell/agent/settings.json
+{
+  "packages": ["npm:@3d24rd0/pi-antigravity-bridge"]
+}
+```
+
+Restart whichever you installed into. `/agy` appears in the command list and
+`antigravity/` models appear in `/model`. Requires **Node ≥ 22** and the
 [Antigravity CLI](https://antigravity.google/product/antigravity-cli) signed in
-once (`agy models` should list your models).
+once (`agy models` should list your models) — Gentle Shell ships its own runtime,
+so the CLI is the only external piece either client needs.
 
 <details>
 <summary>Install from git instead, or by hand</summary>
@@ -54,11 +67,11 @@ once (`agy models` should list your models).
 pi install git:github.com/3d24rd0/antigravity-bridge
 ```
 
-Or in `~/.pi/agent/settings.json` (Gentle Shell:
+By hand, in `~/.pi/agent/settings.json` (Gentle Shell:
 `~/.gentle-shell/agent/settings.json`):
 
 ```json
-{ "packages": ["npm:@3d24rd0/pi-antigravity-bridge"] }
+{ "packages": ["git:github.com/3d24rd0/antigravity-bridge"] }
 ```
 
 </details>
