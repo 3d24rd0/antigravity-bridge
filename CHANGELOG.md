@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.1]
+
+### Changed
+
+- Catalog listing: the package description now names what makes this bridge different (Google's own binaries, no reimplemented API, Pi's tools reaching the model) instead of enumerating models that go stale. The logo is cropped to fill its frame.
+
 ## [1.3.0]
 
 ### Added
