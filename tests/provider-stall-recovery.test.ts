@@ -280,3 +280,53 @@ test("S3 late redelivery: an over-cap silent drop fails visibly and clears the b
 	assert.match(errors[0].errorMessage ?? "", /no model output|silently dropped/i);
 	assert.equal(store.get(SESSION_KEY), null, "the poisoned binding must be cleared");
 });
+
+/** Driver whose turn parks on a bridge call, with a snapshot that already knows
+ *  the conversation agy created for it. */
+function parkingDriverWithConversation(conversationId: string): StreamDriver {
+	let served = false;
+	const handle = {
+		id: "park",
+		outcome: new Promise<never>(() => {}),
+		next: async (): Promise<DriverActivity | null> => {
+			if (served) return null;
+			served = true;
+			return { type: "bridge_call", callId: "call-park", name: "AskClaude", args: {} } as DriverActivity;
+		},
+		pushExternal: () => {},
+	};
+	return {
+		get activeHandle() {
+			return handle;
+		},
+		kickIdle: () => {},
+		reentry: () => null,
+		snapshot: () => ({
+			state: "running",
+			conversationId,
+			stats: { spawns: 1, turns: 1, reused: 0, recycles: 0, recycleReasons: {} },
+			lifecycle: [],
+		}),
+		close: async () => {},
+		run: async () => handle,
+	} as unknown as StreamDriver;
+}
+
+test("a first turn that parks binds its conversation immediately", async () => {
+	// A park is positive evidence that agy received the prompt. Without this,
+	// a first-ever turn that parks and then dies leaves no record, and the
+	// retry-dropped tail errors with "No user message to send to agy."
+	const store = new SessionStore(tmpStorePath());
+	const driver = parkingDriverWithConversation("conv-park");
+	const roundTrips = new ToolRoundTrips(driver);
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
+		store,
+		driver,
+		roundTrips,
+	});
+	for await (const _event of streamSimple(model, userTurn("hello"), options)) {
+		// drain: the pass ends as soon as the turn parks
+	}
+	assert.equal(store.get(SESSION_KEY)?.conversationId, "conv-park");
+});

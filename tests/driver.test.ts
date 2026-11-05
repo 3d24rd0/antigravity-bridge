@@ -375,3 +375,37 @@ describe("stream-json driver plan-mode skip-permission gating", () => {
 		await driver.close("shutdown");
 	});
 });
+
+describe("stream-json driver: parked time and the turn cap", () => {
+	test("parked time does not consume the overall turn budget", async () => {
+		// A human-gated call (an approval, an ask_user_question) legitimately
+		// blocks for minutes. The cap used to be armed once and cleared only at
+		// settle, so parked time counted against agy's thinking budget and a
+		// long escalation died mid-turn.
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "HANG",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.01, // 600 ms
+			inactivityMin: 0,
+		});
+		handle.pushExternal({ type: "bridge_call", callId: "call-park", name: "AskClaude", args: {} });
+
+		const parked = await Promise.race([
+			handle.outcome.then(() => "settled" as const),
+			new Promise<"running">((r) => setTimeout(() => r("running"), 1500)),
+		]);
+		assert.equal(parked, "running", "the cap must not fire while the call is parked");
+
+		// Unpark: the remaining budget resumes and fires.
+		driver.kickIdle();
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.match(outcome.error ?? "", /turn timeout/);
+		await driver.close("shutdown");
+	});
+});

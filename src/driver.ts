@@ -122,6 +122,10 @@ interface ActiveTurn {
 	sanitizer: SystemMessageSanitizer;
 	/** Per-turn image staging; removed when the turn settles. */
 	stagedImages?: StagedImages;
+	/** Remaining overall-turn budget; parked time never consumes it. */
+	capRemainingMs?: number;
+	/** Wall clock when the current budget window started. */
+	capArmedAt?: number;
 	usage?: AgyUsage;
 	conversationId?: string;
 	/** Wall clock at turn creation; the parked-turn probe filters
@@ -164,13 +168,14 @@ async function nextActivity(turn: ActiveTurn): Promise<DriverActivity | null> {
 	}
 }
 
-function makeHandle(turn: ActiveTurn): TurnHandle {
+function makeHandle(turn: ActiveTurn, onPark: () => void): TurnHandle {
 	return {
 		id: turn.id,
 		outcome: turn.outcome,
 		next: () => nextActivity(turn),
 		pushExternal: (activity) => {
 			if (activity.type === "bridge_call") {
+				if (turn.parks === 0) onPark();
 				turn.parks += 1;
 				if (turn.idleTimer) {
 					clearTimeout(turn.idleTimer);
@@ -250,7 +255,22 @@ export class StreamDriver implements TurnDriver {
 	}
 
 	get activeHandle(): TurnHandle | null {
-		return this.#active && !this.#active.closed ? makeHandle(this.#active) : null;
+		const active = this.#active;
+		// Capture the turn, not this.#active: the callback runs later, when #active
+		// may already belong to another turn.
+		return active && !active.closed ? makeHandle(active, () => this.#pauseOverallTimer(active)) : null;
+	}
+
+	/** Freeze the overall cap while a bridge call is parked. */
+	#pauseOverallTimer(turn: ActiveTurn): void {
+		if (turn.overallTimer) {
+			clearTimeout(turn.overallTimer);
+			turn.overallTimer = undefined;
+		}
+		if (turn.capArmedAt !== undefined) {
+			turn.capRemainingMs = Math.max(0, (turn.capRemainingMs ?? 0) - (Date.now() - turn.capArmedAt));
+			turn.capArmedAt = undefined;
+		}
 	}
 
 	/** Called when a parked bridge call resolves or fails. Rearms the idle
@@ -259,6 +279,11 @@ export class StreamDriver implements TurnDriver {
 		const turn = this.#active;
 		if (!turn || turn.closed) return;
 		if (turn.parks > 0) turn.parks -= 1;
+		if (turn.parks === 0) {
+			// Parked time is not agy thinking time: resume the remaining budget.
+			turn.capArmedAt = Date.now();
+			this.#armOverallTimer(turn);
+		}
 		if (turn.parks === 0 && !turn.idleTimer) {
 			const idleMin = turn.request.inactivityMin ?? 5;
 			// 0 disables the stall guard (config inactivityTimeoutMin: 0).
@@ -364,7 +389,7 @@ export class StreamDriver implements TurnDriver {
 				`failed to write to agy driver: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
-		return makeHandle(turn);
+		return makeHandle(turn, () => this.#pauseOverallTimer(turn));
 	}
 
 	#createTurn(request: DriverTurnRequest): ActiveTurn {
@@ -406,15 +431,28 @@ export class StreamDriver implements TurnDriver {
 		return turn;
 	}
 
+	/** Arm (or re-arm) the overall cap with whatever budget remains. */
+	#armOverallTimer(turn: ActiveTurn): void {
+		if (turn.overallTimer) {
+			clearTimeout(turn.overallTimer);
+			turn.overallTimer = undefined;
+		}
+		const remaining = turn.capRemainingMs ?? 0;
+		if (remaining <= 0) return;
+		const totalMin = turn.request.timeoutMin ?? 10;
+		turn.overallTimer = setTimeout(() => {
+			void this.#turnDeadlineGuard(turn, "timeout", `agy exceeded the ${totalMin}m turn timeout`);
+		}, remaining);
+	}
+
 	#armTimers(turn: ActiveTurn): void {
 		// 0 disables a cap (config turnTimeoutMin / inactivityTimeoutMin: 0):
 		// setTimeout(fn, 0) would fire instantly and kill every turn.
 		const totalMin = turn.request.timeoutMin ?? 10;
-		if (totalMin > 0) {
-			turn.overallTimer = setTimeout(() => {
-				void this.#turnDeadlineGuard(turn, "timeout", `agy exceeded the ${totalMin}m turn timeout`);
-			}, totalMin * 60_000);
-		}
+		// 0 disables the cap; anything else becomes the first budget window.
+		turn.capRemainingMs = totalMin > 0 ? totalMin * 60_000 : 0;
+		turn.capArmedAt = Date.now();
+		this.#armOverallTimer(turn);
 		const idleMin = turn.request.inactivityMin ?? 5;
 		if (idleMin > 0) {
 			turn.idleTimer = setTimeout(() => {

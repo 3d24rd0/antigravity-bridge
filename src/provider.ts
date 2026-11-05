@@ -763,7 +763,26 @@ async function runTurnDriver(
 			if (consumeActivity(stream, blocks, activity, diffCtx, cwd, feats) === "parked") return "parked";
 		}
 	};
-	if ((await drainTurn(handle)) === "parked") return;
+	if ((await drainTurn(handle)) === "parked") {
+		// A park is positive evidence that agy received the prompt, so bind the
+		// conversation now: a first-ever turn that parks and then dies (failed
+		// continuation, process restart) otherwise left no record to resume from.
+		// First binding only - an existing conversation is never moved.
+		if (!isEphemeral && !existing?.conversationId) {
+			const parkedConversation = deps.driver.snapshot().conversationId;
+			if (parkedConversation) {
+				store.set(key, {
+					conversationId: parkedConversation,
+					lastStepIdx: -1,
+					lastMessageCount: messageCount,
+					modelId: agyModel,
+				});
+				if (stagedAgentName) stagedAgentByConversation.set(parkedConversation, stagedAgentName);
+				deps.log?.("park-binding", { conversation: parkedConversation }, "info");
+			}
+		}
+		return;
+	}
 
 	let outcome = await handle.outcome;
 	// Issue #2 recovery paths. agy's stream-json prompt path silently drops an
