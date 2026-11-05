@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0]
+
+### Added
+
+- Images reach the model on the stream-json engine too: the prompt is text-only, so the pixels are staged as per-turn 0600 files and the model is pointed at them. Both `-cli` variants advertise text+image.
+
+### Fixed
+
+- Echoed `<SYSTEM_MESSAGE>` blocks are stripped from both engines, even when the delta boundary lands inside the marker. Unterminated blocks fail open.
+- A late delivery carries the images the parked call produced; text alone left the model hunting OCR tools.
+- A conversation is bound as soon as a turn parks, so a first turn that parks and then dies still has a record to resume from.
+- Parked time no longer consumes the overall turn cap: it freezes at the first park and resumes with the remaining budget.
+
 ## [1.1.1]
 
 ### Fixed
