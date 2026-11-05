@@ -39,6 +39,15 @@ vi.mock("../src/mcp-registration.js", () => ({
 }));
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	beginBackgroundRun,
+	endBackgroundRun,
+	markBackgroundFinishing,
+	registerBackgroundKill,
+	resetBackgroundState,
+	settleBackgroundRun,
+	stopBackgroundRun,
+} from "../src/ask-background.js";
 
 type ToolResult = { content: Array<{ type: string; text: string }>; details?: Record<string, unknown> };
 type Wake = {
@@ -404,58 +413,32 @@ test(
 		}),
 );
 
-test(
-	"stop refuses during the finishing window instead of discarding the computed answer",
-	{ timeout: 20_000 },
-	() =>
-		withHarness(async (h) => {
-			// The child exits at once and writes a marker first, so the test knows
-			// the close is imminent; the answer still rides conversation discovery
-			// (5 x 100ms), which is the window a stop must not settle.
-			const exited = path.join(os.tmpdir(), `agy-bg-exited-${process.pid}-${Date.now()}`);
-			useBin(
-				makeAgy([
-					"printf 'LATE-ANSWER\\n'",
-					`: > ${JSON.stringify(exited)}`,
-					"exit 0",
-				]),
-			);
-			const cwd = makeCwd();
-			try {
-				const res = await h.tool.execute(
-					"t1",
-					{ prompt: "quick run", cwd, background: true, timeoutMinutes: 1 },
-					undefined,
-					undefined,
-					{ cwd, mode: "tui" },
-				);
-				const runId = runIdOf(res.content[0].text);
+test("stop refuses inside the finishing window instead of discarding the answer", () => {
+	// The window opens when the child's stream closes and closes when the answer
+	// settles: discovery still runs in between. Driving it through a real child
+	// meant racing a few milliseconds and stopping the run for real, so the guard
+	// is pinned here and the delivery path stays covered by the wake tests.
+	resetBackgroundState();
+	const run = beginBackgroundRun("quick run");
+	const killed: string[] = [];
+	registerBackgroundKill(run.runId, () => killed.push(run.runId));
+	markBackgroundFinishing(run.runId);
 
-				await waitFor(() => fs.existsSync(exited));
-				// Let the close event land: the finishing window opens there.
-				await sleep(60);
+	const wakes: Array<{ content: string }> = [];
+	const target = { sendMessage: (message: { content: string }) => wakes.push(message) };
 
-				let refused = false;
-				const deadline = Date.now() + 4000;
-				while (Date.now() < deadline && h.wakes.length === 0) {
-					await h.runAgy(`stop ${runId}`);
-					if ((h.notices.at(-1) ?? "").includes("already finished; its result is being delivered")) {
-						refused = true;
-						break;
-					}
-					await sleep(5);
-				}
-				expect(refused).toBe(true);
+	expect(stopBackgroundRun(target, run.runId)).toContain(
+		"already finished; its result is being delivered",
+	);
+	expect(killed).toEqual([]);
+	expect(wakes).toEqual([]);
 
-				await waitFor(() => h.wakes.length > 0);
-				expect(h.wakes[0].content).toContain("LATE-ANSWER");
-				expect(h.wakes[0].content).not.toContain("FAILED");
-			} finally {
-				fs.rmSync(exited, { force: true });
-				fs.rmSync(cwd, { recursive: true, force: true });
-			}
-		}),
-);
+	// Once the answer settled, the same stop reports the run instead of killing it.
+	expect(settleBackgroundRun(run.runId, "done")).toBe(true);
+	endBackgroundRun(run.runId);
+	expect(stopBackgroundRun(target, run.runId)).toContain("not running (status: done)");
+	expect(killed).toEqual([]);
+});
 
 // --- Rule 5: shutdown kills silently; print/json refuses background --------
 
