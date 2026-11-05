@@ -1,16 +1,33 @@
 {
-  "name": "@3d24rd0/pi-extensions",
+  "name": "@3d24rd0/pi-antigravity-bridge",
   "version": "1.1.0",
-  "private": true,
-  "description": "Personal suite of Pi Coding Agent extensions, skills, and prompts",
+  "description": "Antigravity Bridge: Google Antigravity as a Pi model provider. Gemini and Claude on your existing subscription, through the official ACP server or the stream-json agy CLI, with Pi tools bridged to the model.",
   "type": "module",
-  "workspaces": [
-    "packages/*"
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "files": [
+    "extensions",
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^1.4.0",
@@ -25,21 +42,36 @@
   "engines": {
     "node": ">=22.0.0"
   },
-  "pi": {
-    "extensions": [
-      "./packages/pi-antigravity-bridge/extensions"
-    ]
+  "publishConfig": {
+    "access": "public"
   },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "antigravity",
+    "antigravity-acp",
+    "agy",
+    "gemini",
+    "google",
+    "google-acp",
+    "acp",
+    "agent-client-protocol",
+    "mcp",
+    "mcp-server",
+    "provider",
+    "streaming",
+    "claude",
+    "antigravity-cli"
+  ],
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/3d24rd0/pi-extensions.git"
   },
+  "homepage": "https://github.com/3d24rd0/pi-extensions#readme",
   "author": {
     "name": "Eduardo Martínez Catalá (3d24rd0)",
     "email": "3d24rd0@gmail.com",
     "url": "https://github.com/3d24rd0"
-  },
-  "keywords": [
-    "pi-package"
-  ]
+  }
 }
