@@ -47,7 +47,7 @@ Through the Pi CLI:
 pi install npm:@3d24rd0/pi-antigravity-bridge
 
 # Or straight from the repository (bundles the same package)
-pi install git:github.com/3d24rd0/pi-extensions
+pi install git:github.com/3d24rd0/antigravity-bridge
 ```
 
 Or add it to `~/.pi/agent/settings.json` (Gentle Shell:
@@ -262,8 +262,8 @@ uninstall should remove them:
 ## Development
 
 ```bash
-git clone https://github.com/3d24rd0/pi-extensions
-cd pi-extensions
+git clone https://github.com/3d24rd0/antigravity-bridge
+cd antigravity-bridge
 npm install
 npm run check      # tsc --noEmit + the full vitest suite
 ```

@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **The repository is a single package at its root, renamed `antigravity-bridge`.** The monorepo layout was a leftover from when it carried four packages; what remained was one workspace under a private root manifest whose only job was pointing at the subfolder. Nothing about npm distribution changes (the tarball was already flat and pi.dev indexes packages by the `pi-package` keyword), but **git installs move to `pi install git:github.com/3d24rd0/antigravity-bridge`** — GitHub redirects the old URL.
 - **The project presents as *Antigravity Bridge*.** Title, npm description and gallery card drop the package-style name. The package itself stays `@3d24rd0/pi-antigravity-bridge`: pi.dev indexes npm packages by the `pi-package` keyword rather than by their name, and an unscoped `antigravity-bridge` is already taken, so a rename would break installs and buy no discoverability.
 - **The `/agy` help text and its completion come from one table** (`src/agy-command-surface.ts`), so the documented usage can no longer drift from the dispatcher. The hand-written description still advertised `engine stream-json|acp` long after `/agy engine` stopped switching engines; the retired `status` entry stays accepted but is no longer listed.
 - Dependencies refreshed: vitest 5.1.0, `@earendil-works/*` 1.5.0, `@modelcontextprotocol/sdk` 1.32.2, TypeScript 7.0.2, `@types/node` 26.6.6. Three unused dev dependencies were dropped, and `npm audit` reports no vulnerabilities.

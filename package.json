@@ -66,9 +66,9 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/3d24rd0/pi-extensions.git"
+    "url": "git+https://github.com/3d24rd0/antigravity-bridge.git"
   },
-  "homepage": "https://github.com/3d24rd0/pi-extensions#readme",
+  "homepage": "https://github.com/3d24rd0/antigravity-bridge#readme",
   "author": {
     "name": "Eduardo Martínez Catalá (3d24rd0)",
     "email": "3d24rd0@gmail.com",
