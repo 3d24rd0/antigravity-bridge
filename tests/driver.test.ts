@@ -48,6 +48,41 @@ describe("stream-json driver stdout framing (H1)", () => {
 	});
 });
 
+describe("stream-json driver: echoed system messages", () => {
+	test("a <SYSTEM_MESSAGE> block split inside the marker never reaches the transcript", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "ECHO-SYSTEM-MESSAGE",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const activities: DriverActivity[] = [];
+		const collecting = (async () => {
+			for (;;) {
+				const activity = await handle.next();
+				if (activity === null) return;
+				activities.push(activity);
+			}
+		})();
+		const outcome = await handle.outcome;
+		await collecting;
+
+		// The block is 40 characters of notification; the answer around it is not.
+		const text = activities
+			.filter((a): a is Extract<DriverActivity, { type: "text" }> => a.type === "text")
+			.map((a) => a.delta)
+			.join("");
+		assert.equal(text, "BEFORE  AFTER");
+		assert.equal(outcome.response, "BEFORE  AFTER");
+		assert.equal(/SYSTEM_MESSAGE/.test(text), false);
+	});
+});
+
 describe("stream-json driver frame ceiling", () => {
 	test("a no-newline flood over the frame cap fails the turn instead of buffering forever", async () => {
 		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;

@@ -23,6 +23,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { UsageEstimate } from "../config.js";
+import { SystemMessageSanitizer } from "../stream-sanitizer.js";
 import { AcpConnection, resolveAcpBinary, type AcpMcpServer, type AcpPermissionRequest } from "./connection.js";
 import type { AcpPermissionContext, AcpPermissionHandler } from "./connection.js";
 import { mapStopReason, mapUpdate, TextAccumulator, type AcpEditDiff } from "./events.js";
@@ -80,6 +81,8 @@ interface ActiveTurn {
 	resolve: (o: TurnOutcome) => void;
 	outcome: Promise<TurnOutcome>;
 	response: TextAccumulator;
+	/** Strips echoed <SYSTEM_MESSAGE> blocks before they reach the transcript. */
+	sanitizer: SystemMessageSanitizer;
 	/** Usage-synthesis counters: per-delta token sums (estimate mode) and
 	 *  delta counts (direct mode). Sums are taken per delta, never over the
 	 *  joined text, so a word split across chunks stays two words. */
@@ -418,7 +421,11 @@ export class AcpDriver implements TurnDriver {
 		if (!mapped) return;
 		switch (mapped.kind) {
 			case "text": {
-				const emit = turn.response.append(mapped.delta);
+				// Gemini echoes agy's own <SYSTEM_MESSAGE> notifications as answer
+				// text; strip them before the accumulator sees them.
+				const cleaned = turn.sanitizer.push(mapped.delta);
+				if (!cleaned) return;
+				const emit = turn.response.append(cleaned);
 				if (emit) {
 					turn.textDeltas += 1;
 					turn.textTokens += estimateTokens(emit);
@@ -625,6 +632,7 @@ export class AcpDriver implements TurnDriver {
 			resolve,
 			outcome,
 			response: new TextAccumulator(),
+			sanitizer: new SystemMessageSanitizer(),
 			textTokens: 0,
 			thoughtTokens: 0,
 			textDeltas: 0,
@@ -738,6 +746,12 @@ export class AcpDriver implements TurnDriver {
 
 	#settle(turn: ActiveTurn, outcome: TurnOutcome): void {
 		if (turn.closed) return;
+		// Fail open: a block the server never closed is real text after all.
+		const tail = turn.sanitizer.flush();
+		if (tail) {
+			const emit = turn.response.append(tail);
+			if (emit) this.#emit(turn, { type: "text", delta: emit });
+		}
 		// Gate B stopgap: synthesize usage on clean turns while the server sends
 		// none. Runs BEFORE close so the usage activity drains through the
 		// normal #nextActivity loop (provider maps it onto partial.usage).

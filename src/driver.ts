@@ -23,6 +23,7 @@ import { gateHooksStaged } from "./approval-hook.js";
 import { parkedTurnAnswer } from "./parked-turn.js";
 import { redactText } from "./redact.js";
 import { installProcessCleanup, signalExitCode } from "./process-cleanup.js";
+import { SystemMessageSanitizer } from "./stream-sanitizer.js";
 import type {
 	AgyUsage,
 	DriverActivity,
@@ -116,6 +117,8 @@ interface ActiveTurn {
 	idleTimer?: NodeJS.Timeout;
 	onAbort?: () => void;
 	response: string;
+	/** Strips echoed <SYSTEM_MESSAGE> blocks before they reach the transcript. */
+	sanitizer: SystemMessageSanitizer;
 	usage?: AgyUsage;
 	conversationId?: string;
 	/** Wall clock at turn creation; the parked-turn probe filters
@@ -360,6 +363,7 @@ export class StreamDriver implements TurnDriver {
 			resolve,
 			outcome,
 			response: "",
+			sanitizer: new SystemMessageSanitizer(),
 			sawResult: false,
 			sawModelStep: false,
 			cumulativeText: undefined,
@@ -650,6 +654,11 @@ export class StreamDriver implements TurnDriver {
 	}
 
 	#appendAgentText(turn: ActiveTurn, text: string): void {
+		// Gemini echoes agy's own <SYSTEM_MESSAGE> notifications as answer text;
+		// strip them here, where the engine delta enters the turn.
+		const cleaned = turn.sanitizer.push(text);
+		if (cleaned === "") return;
+		text = cleaned;
 		// response_text is observed as a delta stream; guard against builds that
 		// resend the full text. A cumulative sender's second chunk CONTAINS
 		// everything accumulated so far as a prefix. Two guards against
@@ -685,6 +694,13 @@ export class StreamDriver implements TurnDriver {
 
 	#settle(turn: ActiveTurn, outcome: TurnOutcome): void {
 		if (turn.closed) return;
+		// Fail open: anything the sanitizer still holds is real text unless it
+		// turns out to be an unterminated block.
+		const tail = turn.sanitizer.flush();
+		if (tail) {
+			turn.response += tail;
+			emit(turn, { type: "text", delta: tail });
+		}
 		turn.closed = true;
 		if (turn.overallTimer) clearTimeout(turn.overallTimer);
 		if (turn.idleTimer) clearTimeout(turn.idleTimer);

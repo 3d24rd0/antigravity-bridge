@@ -50,6 +50,24 @@ case "$_line" in
     sleep 0.2
     exit 0
     ;;
+  *ECHO-SYSTEM-MESSAGE*)
+    # Gemini echoes agy's own background-task notification back as answer text.
+    # The delta split lands INSIDE the marker, which is the case a
+    # filter-after-the-fact cannot handle.
+    printf '%s
+' '{"event":"init","init":{"conversation_id":"conv-echo"}}'
+    sleep 0.1
+    printf '%s' '{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"BEFORE <SYSTEM_'
+    sleep 0.2
+    printf '%s' 'MESSAGE>Background task finished.</SYSTEM_MESSAGE> AFTER'
+    printf '%s
+' '"}}'
+    sleep 0.15
+    printf '%s
+' '{"event":"result","result":{"status":"SUCCESS","response":"BEFORE  AFTER"}}'
+    sleep 0.2
+    exit 0
+    ;;
 esac
 if [[ "$_line" == *KEEP-ALIVE* ]]; then
 	# Two-turn reuse test: serve TWO user turns on ONE process, then exit.
