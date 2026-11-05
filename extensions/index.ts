@@ -1,20 +1,21 @@
-// pi-antigravity-bridge - extension entry point.
+// Antigravity Bridge - Pi extension entry point.
 //
-// Registers Gemini (via the agy CLI) as a pi model provider so it shows up in
-// the /model picker as antigravity/gemini-*. When selected, pi routes each turn
-// through streamSimple, which feeds the persistent stream-json driver process
-// and streams the agent text back into pi's TUI.
+// Registers the `antigravity` provider and the `/agy` command. A turn reaches
+// Google Antigravity through one of two engines, chosen by the model id:
 //
-// Architectural wall (cannot be worked around - see PLAN.md):
-//   agy runs its OWN closed tool loop against --add-dir. pi's read/write/edit/
-//   bash tools never fire. Tool activity is surfaced as thinking events
-//   ("[agy tool: editing foo.ts]") for visibility, but the edits already landed
-//   on disk and pi's inline diff review does not engage.
+//   -acp   Google's official ACP server over JSON-RPC (images, native cards)
+//   -cli   the stream-json `agy` CLI
 //
-// /agy command: full runtime config surface (engine, mode, permissions,
-// bridge tools, model, thinking, digest, system prompt, acp binary) plus
-// doctor, auth, patch-cleanup, and session clear. Config persists to
-// ~/.pi/agent/antigravity-bridge/config.json so toggles survive restarts.
+// Pi's own tools reach the model over a localhost MCP server
+// (src/mcp-server.ts) guarded by a per-session bearer token, so tool calls land
+// as real Pi cards instead of prose in the transcript. Long calls escalate to a
+// poll handle rather than blocking the turn, and a gated approval can park a
+// mutating native `agy` tool as a shadow Pi tool until the human answers.
+//
+// This file is wiring only: provider registration, the command surface, the
+// session hooks and the tool bridge. The engines live in src/driver.ts and
+// src/acp/driver.ts; behaviour belongs in src/. Config persists to
+// ~/.pi/agent/antigravity-bridge/config.json.
 
 import os from "node:os";
 import fs from "node:fs";
