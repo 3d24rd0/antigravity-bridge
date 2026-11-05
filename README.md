@@ -44,15 +44,15 @@ protocol. This package puts a provider in between:
 pi install npm:@3d24rd0/pi-antigravity-bridge
 ```
 
-**Gentle Shell** — it keeps its packages in its own home, separate from Pi's, so
-add the entry there (`gentle-shell home` prints the path):
+**Gentle Shell** — its launcher points Pi's config at the shell's own home, so
+pass the Pi subcommand through it:
 
-```jsonc
-// ~/.gentle-shell/agent/settings.json
-{
-  "packages": ["npm:@3d24rd0/pi-antigravity-bridge"]
-}
+```bash
+gentle-shell -- install npm:@3d24rd0/pi-antigravity-bridge
 ```
+
+That is the same as adding the entry to `~/.gentle-shell/agent/settings.json` by
+hand; `gentle-shell -- list` shows what the shell has installed.
 
 Restart whichever you installed into. `/agy` appears in the command list and
 `antigravity/` models appear in `/model`. Requires **Node ≥ 22** and the
