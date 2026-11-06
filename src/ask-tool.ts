@@ -11,7 +11,7 @@
 // bridge wins: pi-ask-antigravity detects the bridge package and registers
 // nothing (see its defer guard). This module is the single source of truth.
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -303,8 +303,21 @@ async function runAgyProcess(o: {
 			let timedOut = false;
 
 			const killTree = () => {
+				if (!proc.pid) return;
+				if (process.platform === "win32") {
+					// A negative pid addresses a process group on POSIX only; on
+					// Windows it throws, so the children would survive. taskkill /T
+					// is the documented way, and it is synchronous because this also
+					// runs from a deadline timer.
+					try {
+						execFileSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
+					} catch {
+						/* already gone */
+					}
+					return;
+				}
 				try {
-					if (proc.pid) process.kill(-proc.pid, "SIGTERM");
+					process.kill(-proc.pid, "SIGTERM");
 				} catch {
 					/* process group already gone */
 				}

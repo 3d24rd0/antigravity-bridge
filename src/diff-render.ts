@@ -28,8 +28,14 @@ export interface GitOps {
 	showHead(toplevel: string, relPath: string): string | null;
 }
 
-/** Default git ops via synchronous git CLI calls. Cheap; one process per call. */
+/** Default git ops via synchronous git CLI calls. Cheap; one process per call.
+ *  `rev-parse` is cached per directory: it is asked for on every edit step and
+ *  its answer cannot change while the process lives. The `git show` per edit
+ *  stays synchronous by design — the caller renders a thinking-stream fragment
+ *  and has nowhere to await — so the cache is what keeps that cost at one
+ *  process instead of two. */
 export function createExecGitOps(): GitOps {
+	const roots = new Map<string, string | null>();
 	const run = (args: string[], cwd: string): string | null => {
 		try {
 			return execFileSync("git", args, {
@@ -43,8 +49,11 @@ export function createExecGitOps(): GitOps {
 	};
 	return {
 		toplevel: (fileDir) => {
+			if (roots.has(fileDir)) return roots.get(fileDir) ?? null;
 			const t = run(["rev-parse", "--show-toplevel"], fileDir);
-			return t ? t.trim() || null : null;
+			const root = t ? t.trim() || null : null;
+			roots.set(fileDir, root);
+			return root;
 		},
 		showHead: (toplevel, relPath) => run(["show", `HEAD:${relPath}`], toplevel),
 	};

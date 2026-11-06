@@ -133,6 +133,8 @@ async function defaultSpawnRaw(
 			child.kill("SIGKILL");
 			done(() => reject(new Error(`${cmd} timed out`)));
 		}, timeoutMs);
+		// A watchdog must never be the reason the process cannot exit.
+		timer.unref?.();
 		child.stdout.on("data", (d: Buffer) => {
 			if (out.length + d.length > capBytes) {
 				try {
