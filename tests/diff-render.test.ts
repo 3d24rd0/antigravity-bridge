@@ -187,3 +187,36 @@ test("createExecGitOps: toplevel + showHead against a real temp repo", () => {
 		fs.rmSync(repo, { recursive: true, force: true });
 	}
 });
+
+test("createExecGitOps: the toplevel answer is cached per directory", () => {
+	// A fresh, empty dir is not a work tree, so every uncached lookup would run
+	// a real `git rev-parse`. Counting through PATH keeps the assertion honest
+	// without mocking the module under test.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-gitcache-"));
+	const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-gitshim-"));
+	const log = path.join(shimDir, "calls.log");
+	const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf-8" }).trim();
+	fs.writeFileSync(
+		path.join(shimDir, "git"),
+		`#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\nexec ${JSON.stringify(realGit)} "$@"\n`,
+		{ mode: 0o755 },
+	);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${shimDir}:${previousPath}`;
+	try {
+		const ops = createExecGitOps();
+		ops.toplevel(dir);
+		ops.showHead(dir, "x.txt");
+		const lines = fs.readFileSync(log, "utf-8").trim().split("\n");
+		assert.equal(lines.filter((l) => l.startsWith("rev-parse")).length, 1);
+		assert.equal(ops.toplevel(dir), null, "a non-repo dir caches its null too");
+		assert.equal(
+			fs.readFileSync(log, "utf-8").trim().split("\n").filter((l) => l.startsWith("rev-parse")).length,
+			1,
+		);
+	} finally {
+		process.env.PATH = previousPath;
+		fs.rmSync(dir, { recursive: true, force: true });
+		fs.rmSync(shimDir, { recursive: true, force: true });
+	}
+});

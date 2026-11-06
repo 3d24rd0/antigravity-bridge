@@ -20,7 +20,7 @@
 //   - mcpServers entries: {name, type:"http", url, headers:[]} — headers is a
 //     LIST; a dead URL is accepted at session time (lazy connect)
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -38,8 +38,10 @@ let exitHookInstalled = false;
 
 function killProcessGroupSync(pid: number, signal: "SIGTERM" | "SIGKILL" = "SIGKILL"): void {
 	if (process.platform === "win32") {
+		// Synchronous on purpose: this also runs from the process "exit" hook,
+		// where the event loop is already dead and an async spawn never executes.
 		try {
-			spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on("error", () => {});
+			execFileSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
 		} catch {
 			/* best effort */
 		}

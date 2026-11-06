@@ -110,7 +110,7 @@ export function mapNativeToShadow(name: string, args: Record<string, unknown>): 
 				shadow: "edit",
 				input: {
 					path: str(a.TargetFile),
-					edits: [{ oldText: str(a.SearchText), newText: str(a.ReplacementContent) }],
+					edits: [{ oldText: str(a.TargetContent), newText: str(a.ReplacementContent) }],
 				},
 			};
 		case "multi_replace_file_content": {
@@ -121,7 +121,7 @@ export function mapNativeToShadow(name: string, args: Record<string, unknown>): 
 					path: str(a.TargetFile),
 					edits: chunks.map((c) => {
 						const chunk = (c ?? {}) as Record<string, unknown>;
-						return { oldText: str(chunk.SearchText), newText: str(chunk.ReplacementContent) };
+						return { oldText: str(chunk.TargetContent), newText: str(chunk.ReplacementContent) };
 					}),
 				},
 			};

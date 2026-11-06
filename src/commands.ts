@@ -7,6 +7,7 @@ import {
 	type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { showSettingsMenu, type MenuRow } from "./settings-menu.js";
+
 import { agyArgumentCompletions, agyUsageLine } from "./agy-command-surface.js";
 import type { AgyModelEntry } from "./models.js";
 import type { SessionStore } from "./sessions.js";
@@ -175,6 +176,19 @@ function statusText(ctx: AgyCommandCtx): string {
 	].join("\n");
 }
 
+
+/** Open a file with the platform handler. Detached and forgotten, but the
+ *  ChildProcess still needs an "error" listener: when the handler is missing
+ *  (xdg-open on a minimal Linux, open on a stripped macOS) Node emits "error"
+ *  on the child, and an unhandled one throws out of the TUI loop and takes the
+ *  whole Pi process with it. */
+function spawnDetached(cmd: string, target: string): void {
+	spawn(cmd, [target], { detached: true, stdio: "ignore", shell: false })
+		.on("error", (err) => {
+			process.stderr.write(`[antigravity] could not open ${target} with ${cmd}: ${err instanceof Error ? err.message : String(err)}\n`);
+		})
+		.unref();
+}
 
 export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
@@ -560,7 +574,7 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						ui?.notify(`no file-open handler for ${process.platform}; the file is at ${artifact.absolutePath}`, "warning");
 						return;
 					}
-					spawn(openCmd.cmd, [artifact.absolutePath], { detached: true, stdio: "ignore", shell: false }).unref();
+					spawnDetached(openCmd.cmd, artifact.absolutePath);
 					ui?.notify(`opened ${artifact.name}`, "info");
 					return;
 				}
@@ -590,7 +604,7 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 							ui.notify(`no file-open handler for ${process.platform}.`, "warning");
 							continue;
 						}
-						spawn(openCmd.cmd, [action.artifact.absolutePath], { detached: true, stdio: "ignore", shell: false }).unref();
+						spawnDetached(openCmd.cmd, action.artifact.absolutePath);
 					}
 					break;
 				}

@@ -296,13 +296,13 @@ test("mapNativeToShadow covers the gated matcher set", () => {
 		input: { command: "ls" },
 	});
 	assert.deepEqual(
-		mapNativeToShadow("replace_file_content", { TargetFile: "/w/c.txt", SearchText: "a", ReplacementContent: "b" }),
+		mapNativeToShadow("replace_file_content", { TargetFile: "/w/c.txt", TargetContent: "a", ReplacementContent: "b" }),
 		{ shadow: "edit", input: { path: "/w/c.txt", edits: [{ oldText: "a", newText: "b" }] } },
 	);
 	assert.deepEqual(
 		mapNativeToShadow("multi_replace_file_content", {
 			TargetFile: "/w/d.txt",
-			ReplacementChunks: [{ SearchText: "a", ReplacementContent: "b" }, { SearchText: "c", ReplacementContent: "d" }],
+			ReplacementChunks: [{ TargetContent: "a", ReplacementContent: "b" }, { TargetContent: "c", ReplacementContent: "d" }],
 		}),
 		{ shadow: "edit", input: { path: "/w/d.txt", edits: [{ oldText: "a", newText: "b" }, { oldText: "c", newText: "d" }] } },
 	);
