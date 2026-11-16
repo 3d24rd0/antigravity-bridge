@@ -21,9 +21,12 @@ import {
 	MODELS_CACHE_TTL_MS,
 	MODELS_OUTPUT_CAP_BYTES,
 	parseModelEngine,
+	refreshCatalogRaw,
 	refreshModelsInBackground,
 	spawnAgyModelsRaw,
+	toAgyEffort,
 	toPiModel,
+	toRegistrationModel,
 } from "../src/models.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -284,10 +287,37 @@ test("toPiModel: effort-driven base shows toggle restricted to its tiers", () =>
 	assert.equal(claude.reasoning, true);
 	assert.equal(unverified.reasoning, false);
 
-	// off/minimal always hidden (agy has no no-thinking); Pro also hides medium.
-	assert.deepEqual(flash.thinkingLevelMap, { off: null, minimal: null });
-	assert.deepEqual(pro.thinkingLevelMap, { off: null, minimal: null, medium: null });
-	assert.deepEqual(claude.thinkingLevelMap, { off: null, minimal: null });
+	// off/minimal always hidden (agy has no no-thinking). Every other tier maps
+	// to its own name when the base lists it, and to null when it does not:
+	// pi treats xhigh/max as unsupported unless the map mentions them, so an
+	// absent tier can never be offered by the toggle. Pro also hides medium.
+	assert.deepEqual(flash.thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: "low",
+		medium: "medium",
+		high: "high",
+		xhigh: null,
+		max: null,
+	});
+	assert.deepEqual(pro.thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: "low",
+		medium: null,
+		high: "high",
+		xhigh: null,
+		max: null,
+	});
+	assert.deepEqual(claude.thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: "low",
+		medium: "medium",
+		high: "high",
+		xhigh: null,
+		max: null,
+	});
 	assert.equal(unverified.thinkingLevelMap, undefined);
 });
 
@@ -383,4 +413,123 @@ test("parseModelEngine: extracts baseId and forcedEngine", () => {
 	assert.deepEqual(parseModelEngine("gemini-4-argon-cli"), { baseId: "gemini-4-argon", forcedEngine: "stream-json" });
 	assert.deepEqual(parseModelEngine("claude-opus-5-5-cli"), { baseId: "claude-opus-5-5", forcedEngine: "stream-json" });
 	assert.deepEqual(parseModelEngine("gemini-4-argon"), { baseId: "gemini-4-argon" });
+});
+
+// --- per-model effort tiers (agy 1.5.9 vocabulary: low|medium|high|xhigh|max) ---
+
+test("entriesFromRaw: xhigh/max collapse into their base only where agy lists them", () => {
+	// agy 1.5.9 real catalog shape: Hydrogen ships high/xhigh/medium/low, Argon
+	// only high/medium/low. The tier set must come from agy, never be assumed.
+	const raw = [
+		"gemini-4-hydrogen-high",
+		"gemini-4-hydrogen-xhigh",
+		"gemini-4-hydrogen-medium",
+		"gemini-4-hydrogen-low",
+		"gemini-4-argon-high",
+		"gemini-4-argon-medium",
+		"gemini-4-argon-low",
+		"gemini-x-max",
+		"gemini-x-low",
+	].join("\n");
+	const summary = entriesFromRaw(raw).map((e) => (e.efforts ? `${e.id}[${e.efforts.join("/")}]` : e.id));
+	assert.deepEqual(summary, [
+		"gemini-4-hydrogen[low/medium/high/xhigh]",
+		"gemini-4-argon[low/medium/high]",
+		"gemini-x[low/max]",
+	]);
+});
+
+test("entriesFromRaw: a base with no tier suffix loses its xhigh sibling", () => {
+	// The old behaviour kept gemini-4-hydrogen-xhigh as a second, toggle-less
+	// model. It is the same base at a higher effort: one entry, one toggle.
+	const ids = entriesFromRaw(["gemini-4-hydrogen-xhigh", "gemini-4-hydrogen-high", "gemini-4-hydrogen-low"].join("\n")).map(
+		(e) => e.id,
+	);
+	assert.deepEqual(ids, ["gemini-4-hydrogen"]);
+});
+
+test("toPiModel: xhigh is offered only by the bases agy lists it for", () => {
+	const hydrogen = toPiModel({
+		full: "gemini-4-hydrogen",
+		id: "gemini-4-hydrogen",
+		efforts: ["low", "medium", "high", "xhigh"],
+	});
+	const argon = toPiModel({ full: "gemini-4-argon", id: "gemini-4-argon", efforts: ["low", "medium", "high"] });
+	assert.deepEqual(hydrogen.thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: "low",
+		medium: "medium",
+		high: "high",
+		xhigh: "xhigh",
+		max: null,
+	});
+	assert.deepEqual(argon.thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: "low",
+		medium: "medium",
+		high: "high",
+		xhigh: null,
+		max: null,
+	});
+});
+
+test("toAgyEffort: xhigh/max are sent only where offered, else clamped", () => {
+	const hydrogen = ["low", "medium", "high", "xhigh"] as const;
+	const argon = ["low", "medium", "high"] as const;
+	assert.equal(toAgyEffort("xhigh", hydrogen), "xhigh");
+	// Argon has no xhigh: clamp down to the best tier it does offer.
+	assert.equal(toAgyEffort("xhigh", argon), "high");
+	// Hydrogen has no max: clamp down to xhigh rather than dropping to high.
+	assert.equal(toAgyEffort("max", hydrogen), "xhigh");
+	assert.equal(toAgyEffort("max", ["low", "max"] as const), "max");
+	assert.equal(toAgyEffort("minimal", hydrogen), "low");
+	assert.equal(toAgyEffort(undefined, hydrogen), "low");
+});
+
+// --- refreshCatalogRaw: the live-refresh path used by pi's refreshModels -----
+
+test("refreshCatalogRaw: stale cache spawns agy and persists; fresh cache does not", async () => {
+	const stalePath = tempCachePath();
+	fs.writeFileSync(stalePath, JSON.stringify({ raw: "STALE", savedAt: Date.now() - MODELS_CACHE_TTL_MS - 1 }));
+	assert.equal(await refreshCatalogRaw(makeFakeAgy("NEW"), stalePath), "NEW");
+	assert.equal(readCacheRaw(stalePath), "NEW");
+
+	const freshPath = tempCachePath();
+	fs.writeFileSync(freshPath, JSON.stringify({ raw: "CACHED", savedAt: Date.now() }));
+	assert.equal(await refreshCatalogRaw(makeFakeAgy("SHOULD-NOT-RUN"), freshPath), "CACHED");
+	assert.equal(readCacheRaw(freshPath), "CACHED");
+});
+
+test("refreshCatalogRaw: a failing agy keeps the last known catalog", async () => {
+	const cachePath = tempCachePath();
+	fs.writeFileSync(cachePath, JSON.stringify({ raw: "OLD", savedAt: Date.now() - MODELS_CACHE_TTL_MS - 1 }));
+	assert.equal(await refreshCatalogRaw("/definitely/not/agy", cachePath), "OLD");
+	assert.equal(readCacheRaw(cachePath), "OLD");
+});
+
+test("toRegistrationModel: copies every field pi's registration needs", () => {
+	const model = toPiModel(
+		{ full: "gemini-4-hydrogen", id: "gemini-4-hydrogen", efforts: ["low", "medium", "high", "xhigh"] },
+		["text", "image"],
+		{ engineSuffix: "acp", engineLabel: "ACP" },
+	);
+	const reg = toRegistrationModel(model);
+	assert.deepEqual(Object.keys(reg).sort(), [
+		"api",
+		"contextWindow",
+		"cost",
+		"id",
+		"input",
+		"maxTokens",
+		"name",
+		"reasoning",
+		"thinkingLevelMap",
+	]);
+	assert.equal(reg.id, "gemini-4-hydrogen-acp");
+	assert.equal(reg.reasoning, true);
+	assert.equal(reg.thinkingLevelMap?.xhigh, "xhigh");
+	assert.deepEqual(reg.input, ["text", "image"]);
+	assert.equal(reg.contextWindow, 1_000_000);
 });
