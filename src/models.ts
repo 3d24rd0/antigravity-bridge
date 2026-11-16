@@ -12,11 +12,12 @@
 // Gemini AND Claude models are collapsed to a BASE slug (gemini-4-argon,
 // gemini-3.8-flash, claude-sonnet-5-5) and exposed with a thinking-effort
 // toggle whose levels match exactly the tiers agy offers that base (Claude 5.5,
-// Gemini 3.8 Flash, and Gemini 4 Argon all accept low/medium/high). The picked
-// level is sent as agy --effort; a bare base slug is INVALID on its own (agy:
-// "requires --effort"), so effort is always passed. Only unverified families
-// keep agy's exact slug with no toggle, so an unknown future family degrades
-// safely; the retired gpt-oss family is dropped outright (HIDDEN_FAMILY_RE).
+// Gemini 3.8 Flash, and Gemini 4 Argon all accept low/medium/high; Gemini 4
+// Hydrogen adds xhigh). The picked level is sent as agy --effort; a bare base
+// slug is INVALID on its own (agy: "requires --effort"), so effort is always
+// passed. Families agy lists with a single tier, and families whose
+// base+--effort behaviour is unverified, keep agy's exact slug and carry no
+// toggle, so nothing unsupported is ever risked.
 // Google's Antigravity subscription bills all of these through agy.
 
 import { spawn } from "node:child_process";
@@ -36,13 +37,13 @@ const DISCOVERY_TIMEOUT_MS = 8_000;
 export const MODELS_OUTPUT_CAP_BYTES = 1024 * 1024;
 
 /** Reasoning-effort tiers agy accepts via --effort. */
-export type AgyEffort = "low" | "medium" | "high";
+export type AgyEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
-/** low < medium < high, for sorting/clamping. */
-const EFFORT_RANK: Record<AgyEffort, number> = { low: 0, medium: 1, high: 2 };
+/** low < medium < high < xhigh < max, for sorting/clamping. */
+const EFFORT_RANK: Record<AgyEffort, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 };
 
 /** pi thinking-effort order mirrors agy's, for clamping. */
-export const AGY_EFFORT_ORDER: readonly AgyEffort[] = ["low", "medium", "high"];
+export const AGY_EFFORT_ORDER: readonly AgyEffort[] = ["low", "medium", "high", "xhigh", "max"];
 
 /** Map pi's thinking level onto one of the tiers `efforts` the base actually
  *  supports, clamping to the nearest available. agy rejects an effort tier a
@@ -50,10 +51,10 @@ export const AGY_EFFORT_ORDER: readonly AgyEffort[] = ["low", "medium", "high"];
  *  provider turns AND the AskAntigravity delegation tool (thinking/effort
  *  params): one vocabulary, one clamp. When pi sends no level we fall to the
  *  first available tier. */
-export function toAgyEffort(
+export function toAgyEffort<E extends AgyEffort>(
 	reasoning: ThinkingLevel | undefined,
-	efforts: readonly AgyEffort[],
-): AgyEffort {
+	efforts: readonly E[],
+): E {
 	let candidate: AgyEffort;
 	switch (reasoning) {
 		case "minimal":
@@ -64,29 +65,37 @@ export function toAgyEffort(
 			candidate = "medium";
 			break;
 		case "high":
-		case "xhigh":
-		case "max":
 			candidate = "high";
+			break;
+		case "xhigh":
+			candidate = "xhigh";
+			break;
+		case "max":
+			candidate = "max";
 			break;
 		default:
 			candidate = efforts[0] ?? "low";
 	}
-	if (efforts.includes(candidate)) return candidate;
+	if (efforts.includes(candidate as E)) return candidate as E;
 	const i = AGY_EFFORT_ORDER.indexOf(candidate);
 	for (let j = i; j < AGY_EFFORT_ORDER.length; j++) {
-		if (efforts.includes(AGY_EFFORT_ORDER[j])) return AGY_EFFORT_ORDER[j];
+		const level = AGY_EFFORT_ORDER[j] as AgyEffort;
+		if ((efforts as readonly AgyEffort[]).includes(level)) return level as E;
 	}
 	for (let j = i - 1; j >= 0; j--) {
-		if (efforts.includes(AGY_EFFORT_ORDER[j])) return AGY_EFFORT_ORDER[j];
+		const level = AGY_EFFORT_ORDER[j] as AgyEffort;
+		if ((efforts as readonly AgyEffort[]).includes(level)) return level as E;
 	}
-	return efforts[0] ?? "low";
+	return (efforts[0] ?? "low") as E;
 }
 
 /** Split an agy slug into (base, tier). tier is null when the slug has no
- *  -high/-medium/-low suffix - a shape only unverified families should
- *  produce now, and those stay whole. Every Claude slug carries a tier
- *  suffix and collapses to its base. */
-const TIER_RE = /^(.+)-(high|medium|low)$/;
+ *  tier suffix - a shape only unverified families should produce now, and those
+ *  stay whole. Every tier agy's catalog can append belongs here, xhigh and max
+ *  included: omitting xhigh turned Gemini 4 Hydrogen's XHigh tier into a
+ *  second, toggle-less model instead of an effort level. Every Claude slug
+ *  carries a tier suffix and collapses to its base. */
+const TIER_RE = /^(.+)-(xhigh|max|high|medium|low)$/;
 
 /** agy emits clean slug ids (gemini-3.6-flash-high). Validate col1 of each
  *  line so a banner / auth / "Fetching models…" line can't register as a
@@ -247,6 +256,28 @@ function writeModelsCache(raw: string, cachePath: string = MODELS_CACHE_PATH): v
 	}
 }
 
+/** Read agy's CURRENT catalog, for a live refresh (pi's refreshModels) rather
+ *  than a session-start snapshot.
+ *
+ *  Fresh cache: returned as-is, no spawn - a 5-minute window cannot hide a
+ *  change, and a refresh callback must stay cheap. Stale or missing cache:
+ *  spawn agy once (bounded by the same watchdog + cap as startup) and persist
+ *  the result. agy failure returns the last known raw so a broken CLI never
+ *  empties the picker; only a first-ever load with no cache yields "". */
+export async function refreshCatalogRaw(
+	binary: string,
+	cachePath: string = MODELS_CACHE_PATH,
+): Promise<string> {
+	const cache = readModelsCache(cachePath);
+	if (cache && Date.now() - cache.savedAt < MODELS_CACHE_TTL_MS) return cache.raw;
+	const raw = await spawnAgyModelsRaw(binary);
+	if (raw) {
+		writeModelsCache(raw, cachePath);
+		return raw;
+	}
+	return cache?.raw ?? "";
+}
+
 /** Fire-and-forget refresh of the models cache. Called on a stale-cache load so
  *  the next load sees fresh data without this one having to wait on agy. */
 export function refreshModelsInBackground(
@@ -345,14 +376,14 @@ export function slugify(full: string): string {
 
 /** Build the thinkingLevelMap for an effort-driven base: hide "off" and
  *  "minimal" always (agy has no no-thinking mode; a base REQUIRES an effort),
- *  and hide any of low/medium/high the base doesn't offer (e.g. Pro has no
- *  medium). pi's getSupportedThinkingLevels treats a null value as hidden, so
- *  the toggle then shows exactly agy's slider stops. */
+ *  map every tier the base lists to its own name (the provider value agy
+ *  takes), and hide the rest with null. pi's getSupportedThinkingLevels treats
+ *  a null value as hidden - and xhigh/max as unsupported unless the map
+ *  mentions them - so the toggle shows exactly agy's stops for THIS model:
+ *  Hydrogen low/medium/high/xhigh, Argon low/medium/high. */
 function thinkingLevelMapFor(efforts: readonly AgyEffort[]): ThinkingLevelMap {
 	const map: Record<string, string | null> = { off: null, minimal: null };
-	for (const level of ["low", "medium", "high"] as const) {
-		if (!efforts.includes(level)) map[level] = null;
-	}
+	for (const level of AGY_EFFORT_ORDER) map[level] = efforts.includes(level) ? level : null;
 	return map as ThinkingLevelMap;
 }
 
@@ -414,6 +445,23 @@ export function toPiModel(
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: contextWindowFor(entry),
 		maxTokens: 65_536,
+	};
+}
+
+/** pi's registerProvider takes a narrow model definition, not the full Model
+ *  object. One mapper serves the static registration AND the live refresh, so a
+ *  field cannot be copied on one path and forgotten on the other. */
+export function toRegistrationModel(m: Model<Api>) {
+	return {
+		id: m.id,
+		name: m.name,
+		api: m.api,
+		reasoning: m.reasoning,
+		thinkingLevelMap: m.thinkingLevelMap,
+		input: m.input,
+		cost: m.cost,
+		contextWindow: m.contextWindow,
+		maxTokens: m.maxTokens,
 	};
 }
 

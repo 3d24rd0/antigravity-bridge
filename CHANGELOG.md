@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Reasoning tiers follow agy's own catalog, `xhigh` included.** `agy --help` accepts `low|medium|high|xhigh|max`, and Gemini 4 Hydrogen ships `xhigh`. Every tier suffix now collapses into its base slug, so Hydrogen is one model whose thinking toggle reaches `xhigh` instead of a second, toggle-less `gemini-4-hydrogen-xhigh` entry. Each model offers only the tiers agy lists for it: `gemini-4-argon` stops at `high`, and `max` is part of the vocabulary for future catalogs while staying hidden wherever agy does not list it. A model listed with a single tier keeps agy's exact slug and carries no toggle, and the `AskAntigravity` tool keeps its narrower low/medium/high clamp (its documented behaviour, unchanged) while the `/model` catalog goes as wide as agy does.
+- **argon and hydrogen reach the picker without a second restart.** The provider now implements `refreshModels`: Pi's model refresh re-reads agy's catalog, persists it to the models cache and returns the freshly derived models, so a catalog that changed after the session's session-start snapshot (an `agy update`, a plan change, a new family) converges in place. A failing agy keeps the current list instead of emptying the picker, a fresh cache costs no spawn, and the spawn stays bounded by the discovery watchdog and output cap.
+
+### Changed
+
+- Every tier a base lists now maps to its own name in `thinkingLevelMap`, and the tiers it does not list map to `null`. Pi treats `xhigh`/`max` as unsupported unless the map mentions them, so this is what keeps an unsupported tier out of the toggle for models like Argon.
+- Removed a stale `models.ts` header comment claiming a `HIDDEN_FAMILY_RE` dropped the gpt-oss family. No such filter exists: gpt-oss registers as a fixed `-cli` model because agy lists a single tier for it.
+
 ## [1.3.1]
 
 ### Changed

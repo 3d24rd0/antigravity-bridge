@@ -39,7 +39,15 @@ import {
 import { loadConfig, type AgyMode, type ThinkingTier } from "./config.js";
 import { redactText } from "./redact.js";
 import { acquireBridgeSuppression } from "./mcp-registration.js";
-import { AGY_EFFORT_ORDER, spawnAgyModelsRaw, toAgyEffort } from "./models.js";
+import { spawnAgyModelsRaw, toAgyEffort } from "./models.js";
+
+/** Effort tiers the AskAntigravity tool itself accepts (config + tool params).
+ *  Deliberately NARROWER than agy's full vocabulary (low|medium|high|xhigh|max):
+ *  the tool resolves a caller's request against the delegated model's own tier
+ *  list, so pi's xhigh/max clamp down here to the highest tier the tool
+ *  exposes. The provider catalog (/model) is where a model's wider tiers - such
+ *  as Gemini 4 Hydrogen's xhigh - are offered directly. */
+const TOOL_EFFORT_TIERS = ["low", "medium", "high"] as const;
 import { sweepStaleWebAgents, webAgentsRoot } from "./web-tools.js";
 import {
 	beginBackgroundRun,
@@ -673,7 +681,7 @@ export async function registerAskAntigravityTool(
 					requestedModel,
 					entries,
 					cfg.defaultThinking,
-					thinkingArg ? toAgyEffort(thinkingArg as ThinkingLevel, AGY_EFFORT_ORDER) : undefined,
+					thinkingArg ? toAgyEffort(thinkingArg as ThinkingLevel, TOOL_EFFORT_TIERS) : undefined,
 				) ?? { model: requestedModel };
 			const thinking: ThinkingTier = resolved.effort ?? cfg.defaultThinking;
 			// Same default rule as execute: plan when the configured mode is
@@ -796,7 +804,7 @@ export async function registerAskAntigravityTool(
 			}
 			const thinkingArg = (params.thinking as string | undefined) ?? (params.effort as string | undefined);
 			const preferredTier = thinkingArg
-				? toAgyEffort(thinkingArg as ThinkingLevel, AGY_EFFORT_ORDER)
+				? toAgyEffort(thinkingArg as ThinkingLevel, TOOL_EFFORT_TIERS)
 				: undefined;
 			const resolved =
 				resolveAgyModel(requestedModel, entries, config.defaultThinking, preferredTier) ?? {

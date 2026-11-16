@@ -36,7 +36,9 @@ import {
 	isAcpCapableModel,
 	loadModelCatalogRaw,
 	parseModelEngine,
+	refreshCatalogRaw,
 	toPiModel,
+	toRegistrationModel,
 	type AgyModelEntry,
 } from "./models.js";
 import { acpLoginPending, registerAgyCommand } from "./commands.js";
@@ -556,17 +558,23 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		baseUrl: "agy-bridge://antigravity",
 		apiKey: "not-used",
 		api: "agy-bridge",
-		models: models.map((m) => ({
-			id: m.id,
-			name: m.name,
-			api: m.api,
-			reasoning: m.reasoning,
-			thinkingLevelMap: m.thinkingLevelMap,
-			input: m.input,
-			cost: m.cost,
-			contextWindow: m.contextWindow,
-			maxTokens: m.maxTokens,
-		})),
+		models: models.map(toRegistrationModel),
+		// agy's catalog changes under a running session: `agy update` ships new
+		// families (gemini-4-argon, gemini-4-hydrogen) and new effort tiers
+		// (xhigh). The static list above is a session-start snapshot, and the
+		// load-time cache has a TTL, so on its own it can lag one restart behind
+		// the CLI. pi calls this during a model refresh: read agy's current
+		// catalog, persist it, and hand back the freshly derived models so the
+		// picker converges without a second `/reload`. A failed agy keeps the
+		// current list instead of emptying the picker; a fresh cache costs no
+		// spawn, and the spawn itself is bounded by the discovery watchdog and
+		// output cap, so an aborted or stalled refresh cannot hang the picker.
+		async refreshModels(context) {
+			if (context.signal.aborted) return models.map(toRegistrationModel);
+			const raw = await refreshCatalogRaw(binary);
+			if (!raw) return models.map(toRegistrationModel);
+			return expandAgyModels(entriesFromRaw(raw)).map(toRegistrationModel);
+		},
 		streamSimple,
 	});
 

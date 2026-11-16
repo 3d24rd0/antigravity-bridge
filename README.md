@@ -85,6 +85,8 @@ the engine; Pi's thinking toggle picks the reasoning level.
 
 Claude models are CLI-only: the ACP server rejects non-Gemini models. On the CLI engine the prompt carries text only, so an attached image is staged on disk and the model is pointed at it.
 
+The thinking toggle offers exactly the tiers agy lists for the model you picked: `gemini-4-hydrogen` goes up to `xhigh`, `gemini-4-argon` stops at `high`, and a model agy lists with a single tier has no toggle at all. The list follows agy's catalog, so `agy update` shows up after the next model refresh instead of waiting for a reload.
+
 **2. Check the wiring once.**
 
 ```bash
