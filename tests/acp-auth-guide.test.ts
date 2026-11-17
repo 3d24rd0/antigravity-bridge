@@ -105,6 +105,12 @@ test("authFailureHint: maps the common failures onto a next step", () => {
 	assert.match(authFailureHint("request timed out after 600000ms"), /auth-url/);
 	assert.match(authFailureHint("the server accepted the sign-in but holds no usable credentials"), /run \/agy auth again/);
 	assert.match(authFailureHint("spawn ENOENT"), /\/agy doctor/);
+	assert.match(authFailureHint("Unsupported auth method: 'x'"), /does not offer that method/);
+	assert.match(
+		authFailureHint("GOOGLE_API_KEY, or a project and location from GOOGLE_CLOUD_PROJECT ... must be set for Agent Platform authentication."),
+		/not your Antigravity subscription/,
+	);
+	assert.match(authFailureHint("GEMINI_API_KEY must be set"), /Export GEMINI_API_KEY/);
 });
 
 test("authStepGuide: the tunnel route names the saved copy, so no command is needed to recover it", () => {
