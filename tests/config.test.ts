@@ -218,3 +218,33 @@ test("config: AGY_TURN_TIMEOUT_MIN env overrides the file, 0 disables", () => {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}
 });
+
+test("config: defaultThinking accepts agy's full tier vocabulary", () => {
+	for (const tier of ["low", "medium", "high", "xhigh", "max"] as const) {
+		const p = tmpConfig();
+		try {
+			fs.writeFileSync(p, JSON.stringify({ defaultThinking: tier }));
+			assert.equal(loadConfig(p).defaultThinking, tier);
+		} finally {
+			fs.rmSync(path.dirname(p), { recursive: true, force: true });
+		}
+	}
+});
+
+test("config: AGY_DEFAULT_THINKING accepts xhigh and max, unknown falls back to medium", () => {
+	const prev = process.env.AGY_DEFAULT_THINKING;
+	const p = tmpConfig();
+	try {
+		fs.writeFileSync(p, JSON.stringify({ defaultThinking: "medium" }));
+		process.env.AGY_DEFAULT_THINKING = "xhigh";
+		assert.equal(loadConfig(p).defaultThinking, "xhigh");
+		process.env.AGY_DEFAULT_THINKING = "MAX";
+		assert.equal(loadConfig(p).defaultThinking, "max");
+		process.env.AGY_DEFAULT_THINKING = "turbo";
+		assert.equal(loadConfig(p).defaultThinking, "medium");
+	} finally {
+		if (prev === undefined) delete process.env.AGY_DEFAULT_THINKING;
+		else process.env.AGY_DEFAULT_THINKING = prev;
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});

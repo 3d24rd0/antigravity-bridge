@@ -9,7 +9,7 @@ import {
 import { showSettingsMenu, type MenuRow } from "./settings-menu.js";
 
 import { agyArgumentCompletions, agyUsageLine } from "./agy-command-surface.js";
-import type { AgyModelEntry } from "./models.js";
+import { AGY_EFFORT_ORDER, type AgyModelEntry } from "./models.js";
 import type { SessionStore } from "./sessions.js";
 import type { TurnDriver } from "./driver-types.js";
 import type { AcpDriver } from "./acp/driver.js";
@@ -172,7 +172,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		`  sessions:      ${ctx.store.size} bound`,
 		`  config:        ${CONFIG_PATH}`,
 		"",
-		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy stop [runId-prefix], /agy model <alias>, /agy thinking low|medium|high, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy timeout <1-1440|off>, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear, /agy doctor",
+		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy stop [runId-prefix], /agy model <alias>, /agy thinking low|medium|high|xhigh|max, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy timeout <1-1440|off>, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear, /agy doctor",
 	].join("\n");
 }
 
@@ -792,11 +792,11 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			}
 
 			if (sub === "thinking") {
-				if (val === "low" || val === "medium" || val === "high") {
+				if ((AGY_EFFORT_ORDER as readonly string[]).includes(val)) {
 					const next = saveConfig({ defaultThinking: val as ThinkingTier });
 					ui?.notify(`AskAntigravity default thinking set to ${next.defaultThinking}`, "info");
 				} else {
-					ui?.notify(`AskAntigravity thinking: ${loadConfig().defaultThinking} (fallback; callers may override per call)\nusage: /agy thinking low|medium|high`, "info");
+					ui?.notify(`AskAntigravity thinking: ${loadConfig().defaultThinking} (fallback; callers may override per call)\nusage: /agy thinking ${AGY_EFFORT_ORDER.join("|")}`, "info");
 				}
 				return;
 			}
@@ -883,7 +883,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			description:
 				"AskAntigravity one-shot delegation tool: thinking tier used when the call names none. Callers may override per call; this is only the fallback.",
 			currentValue: config.defaultThinking,
-			values: ["low", "medium", "high"],
+			values: [...AGY_EFFORT_ORDER],
 		},
 		{
 			id: "bridge",

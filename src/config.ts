@@ -13,6 +13,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { AGY_EFFORT_ORDER, type AgyEffort } from "./models.js";
 import { normalizeAgyAgentName } from "./agents.js";
 
 /** Base directory for all antigravity-bridge persistent data (config, sessions, logs, cache). */
@@ -43,7 +44,7 @@ export type Engine = "stream-json" | "acp";
  *  chains the sign-in. */
 export const DEFAULT_ENGINE: Engine = "acp";
 export type AgyMode = "accept-edits" | "plan";
-export type ThinkingTier = "low" | "medium" | "high";
+export type ThinkingTier = AgyEffort;
 export type BridgeTools = "none" | "mcp" | "all";
 
 /** How ACP turns report token usage while Gate B stands (agy sends none).
@@ -302,8 +303,11 @@ export function loadConfig(configPath: string = defaultConfigPath()): AgyConfig 
 
 	const envThink = process.env.AGY_DEFAULT_THINKING;
 	const thinkRaw = (envThink ?? file.defaultThinking ?? DEFAULTS.defaultThinking).toLowerCase();
-	const defaultThinking: ThinkingTier =
-		thinkRaw === "low" || thinkRaw === "high" ? thinkRaw : "medium";
+	// agy's own tier vocabulary, not a second hardcoded list: a tier the CLI
+	// does not know falls back to the balanced default.
+	const defaultThinking: ThinkingTier = (AGY_EFFORT_ORDER as readonly string[]).includes(thinkRaw)
+		? (thinkRaw as ThinkingTier)
+		: "medium";
 
 	const askTool = process.env.AGY_ASK_TOOL !== undefined
 		? ["1", "true", "on"].includes(process.env.AGY_ASK_TOOL.toLowerCase())

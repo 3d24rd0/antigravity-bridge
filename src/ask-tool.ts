@@ -39,15 +39,7 @@ import {
 import { loadConfig, type AgyMode, type ThinkingTier } from "./config.js";
 import { redactText } from "./redact.js";
 import { acquireBridgeSuppression } from "./mcp-registration.js";
-import { spawnAgyModelsRaw, toAgyEffort } from "./models.js";
-
-/** Effort tiers the AskAntigravity tool itself accepts (config + tool params).
- *  Deliberately NARROWER than agy's full vocabulary (low|medium|high|xhigh|max):
- *  the tool resolves a caller's request against the delegated model's own tier
- *  list, so pi's xhigh/max clamp down here to the highest tier the tool
- *  exposes. The provider catalog (/model) is where a model's wider tiers - such
- *  as Gemini 4 Hydrogen's xhigh - are offered directly. */
-const TOOL_EFFORT_TIERS = ["low", "medium", "high"] as const;
+import { AGY_EFFORT_ORDER, spawnAgyModelsRaw, toAgyEffort } from "./models.js";
 import { sweepStaleWebAgents, webAgentsRoot } from "./web-tools.js";
 import {
 	beginBackgroundRun,
@@ -79,7 +71,7 @@ COMPACT OUTPUT (param: digest): when true, the prompt is prefixed to request com
 
 THINKING LEVEL (params: thinking, effort - SYNONYMS for one knob):
 - pi calls it thinking, agy calls it effort. Same thing. Pass ONE of the two.
-- Values (pi vocabulary): minimal|low|medium|high|xhigh|max. Clamped to agy's low|medium|high; unknown values fall back to low. "peer review on high thinking" -> thinking: "high".
+- Values (pi vocabulary): minimal|low|medium|high|xhigh|max. Clamped to the tiers the model you delegate to actually offers (Gemini 4 Hydrogen reaches xhigh, Argon stops at high); unknown values fall back to low. "peer review on high thinking" -> thinking: "high".
 - An explicit level beats a tier embedded in model ("flash high") and the configured default. Omit both for the configured default.`;
 
 // Delegations legitimately run long (research, review, analysis); a short
@@ -627,7 +619,7 @@ export async function registerAskAntigravityTool(
 			thinking: Type.Optional(
 				Type.String({
 					description:
-						"Thinking level (= agy effort tier). pi vocabulary: minimal|low|medium|high|xhigh|max, clamped to agy's low|medium|high (unknown values fall back to low). Overrides a tier embedded in `model`. Omit for the configured default.",
+						"Thinking level (= agy effort tier). pi vocabulary: minimal|low|medium|high|xhigh|max, clamped to the tiers the delegated model offers (unknown values fall back to low). Overrides a tier embedded in `model`. Omit for the configured default.",
 				}),
 			),
 			effort: Type.Optional(
@@ -681,7 +673,7 @@ export async function registerAskAntigravityTool(
 					requestedModel,
 					entries,
 					cfg.defaultThinking,
-					thinkingArg ? toAgyEffort(thinkingArg as ThinkingLevel, TOOL_EFFORT_TIERS) : undefined,
+					thinkingArg ? toAgyEffort(thinkingArg as ThinkingLevel, AGY_EFFORT_ORDER) : undefined,
 				) ?? { model: requestedModel };
 			const thinking: ThinkingTier = resolved.effort ?? cfg.defaultThinking;
 			// Same default rule as execute: plan when the configured mode is
@@ -804,7 +796,7 @@ export async function registerAskAntigravityTool(
 			}
 			const thinkingArg = (params.thinking as string | undefined) ?? (params.effort as string | undefined);
 			const preferredTier = thinkingArg
-				? toAgyEffort(thinkingArg as ThinkingLevel, TOOL_EFFORT_TIERS)
+				? toAgyEffort(thinkingArg as ThinkingLevel, AGY_EFFORT_ORDER)
 				: undefined;
 			const resolved =
 				resolveAgyModel(requestedModel, entries, config.defaultThinking, preferredTier) ?? {
