@@ -61,7 +61,7 @@ export function buildTimeBudgetNotice(timeoutMs: number): string {
 
 // --- Types -----------------------------------------------------------------
 
-export type ThinkingTier = "low" | "medium" | "high" | "xhigh" | "max";
+export type ThinkingTier = "low" | "medium" | "high" | "xhigh";
 export type Family = "flash" | "argon" | "other";
 
 export interface ModelEntry {
@@ -93,15 +93,15 @@ export const FAMILY_DEFAULT_TIER: Record<Family, ThinkingTier> = {
 	other: "medium",
 };
 
-export const TIER_RANK: Record<ThinkingTier, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 };
+export const TIER_RANK: Record<ThinkingTier, number> = { low: 0, medium: 1, high: 2, xhigh: 3 };
 
-/** Tier suffix agy appends to a base slug. `xhigh`/`max` are listed before
- *  `high` so a qualified slug is never read as the shorter tier with a stray
- *  letter on the base. One definition feeds the parser, the alias reader and
- *  the base/effort split, so the three can never disagree. */
-const TIER_SUFFIX_RE = /-(xhigh|max|high|medium|low)$/;
+/** Tier suffix agy appends to a base slug. `xhigh` is listed before `high` so
+ *  a qualified slug is never read as the shorter tier with a stray letter on
+ *  the base. One definition feeds the parser, the alias reader and the
+ *  base/effort split, so the three can never disagree. */
+const TIER_SUFFIX_RE = /-(xhigh|high|medium|low)$/;
 /** The same tiers as a free-standing word, for aliases like "flash xhigh". */
-const TIER_WORD_RE = /\b(xhigh|max|low|medium|high)\b/;
+const TIER_WORD_RE = /\b(xhigh|low|medium|high)\b/;
 
 /** pi thinking-level vocabulary -> agy tier, for the thinking/effort tool
  *  params. Unknown values fall to low (agy always thinks something). */
@@ -117,7 +117,8 @@ export function levelToTier(level: string): ThinkingTier {
 		case "xhigh":
 			return "xhigh";
 		case "max":
-			return "max";
+			// pi's top level; agy tops out at xhigh.
+			return "xhigh";
 		default:
 			return "low";
 	}

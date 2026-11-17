@@ -298,7 +298,6 @@ test("toPiModel: effort-driven base shows toggle restricted to its tiers", () =>
 		medium: "medium",
 		high: "high",
 		xhigh: null,
-		max: null,
 	});
 	assert.deepEqual(pro.thinkingLevelMap, {
 		off: null,
@@ -307,7 +306,6 @@ test("toPiModel: effort-driven base shows toggle restricted to its tiers", () =>
 		medium: null,
 		high: "high",
 		xhigh: null,
-		max: null,
 	});
 	assert.deepEqual(claude.thinkingLevelMap, {
 		off: null,
@@ -316,7 +314,6 @@ test("toPiModel: effort-driven base shows toggle restricted to its tiers", () =>
 		medium: "medium",
 		high: "high",
 		xhigh: null,
-		max: null,
 	});
 	assert.equal(unverified.thinkingLevelMap, undefined);
 });
@@ -417,7 +414,7 @@ test("parseModelEngine: extracts baseId and forcedEngine", () => {
 
 // --- per-model effort tiers (agy 1.5.9 vocabulary: low|medium|high|xhigh|max) ---
 
-test("entriesFromRaw: xhigh/max collapse into their base only where agy lists them", () => {
+test("entriesFromRaw: xhigh collapses into its base only where agy lists it", () => {
 	// agy 1.5.9 real catalog shape: Hydrogen ships high/xhigh/medium/low, Argon
 	// only high/medium/low. The tier set must come from agy, never be assumed.
 	const raw = [
@@ -428,14 +425,11 @@ test("entriesFromRaw: xhigh/max collapse into their base only where agy lists th
 		"gemini-4-argon-high",
 		"gemini-4-argon-medium",
 		"gemini-4-argon-low",
-		"gemini-x-max",
-		"gemini-x-low",
 	].join("\n");
 	const summary = entriesFromRaw(raw).map((e) => (e.efforts ? `${e.id}[${e.efforts.join("/")}]` : e.id));
 	assert.deepEqual(summary, [
 		"gemini-4-hydrogen[low/medium/high/xhigh]",
 		"gemini-4-argon[low/medium/high]",
-		"gemini-x[low/max]",
 	]);
 });
 
@@ -462,7 +456,6 @@ test("toPiModel: xhigh is offered only by the bases agy lists it for", () => {
 		medium: "medium",
 		high: "high",
 		xhigh: "xhigh",
-		max: null,
 	});
 	assert.deepEqual(argon.thinkingLevelMap, {
 		off: null,
@@ -471,19 +464,18 @@ test("toPiModel: xhigh is offered only by the bases agy lists it for", () => {
 		medium: "medium",
 		high: "high",
 		xhigh: null,
-		max: null,
 	});
 });
 
-test("toAgyEffort: xhigh/max are sent only where offered, else clamped", () => {
+test("toAgyEffort: xhigh is sent only where offered, and pi's max clamps to agy's top", () => {
 	const hydrogen = ["low", "medium", "high", "xhigh"] as const;
 	const argon = ["low", "medium", "high"] as const;
 	assert.equal(toAgyEffort("xhigh", hydrogen), "xhigh");
 	// Argon has no xhigh: clamp down to the best tier it does offer.
 	assert.equal(toAgyEffort("xhigh", argon), "high");
-	// Hydrogen has no max: clamp down to xhigh rather than dropping to high.
+	// pi still offers "max", agy does not: the highest tier agy has wins.
 	assert.equal(toAgyEffort("max", hydrogen), "xhigh");
-	assert.equal(toAgyEffort("max", ["low", "max"] as const), "max");
+	assert.equal(toAgyEffort("max", argon), "high");
 	assert.equal(toAgyEffort("minimal", hydrogen), "low");
 	assert.equal(toAgyEffort(undefined, hydrogen), "low");
 });

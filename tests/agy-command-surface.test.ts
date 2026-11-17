@@ -67,12 +67,12 @@ test("completion offers the closed value set of the selected subcommand", () => 
 	assert.deepEqual(agyArgumentCompletions("acp-bin /usr/local/bin/x"), []);
 });
 
-test("/agy thinking offers agy's whole tier vocabulary", () => {
+test("/agy thinking offers agy's tier vocabulary, without a tier no model has", () => {
 	const thinking = AGY_SUBCOMMANDS.find((sub) => sub.name === "thinking");
 	assert.ok(thinking);
-	assert.deepEqual(thinking.values, ["low", "medium", "high", "xhigh", "max"]);
-	assert.equal(thinking.usage, "thinking low|medium|high|xhigh|max");
-	assert.ok(agyUsageLine().includes("thinking low|medium|high|xhigh|max"));
+	assert.deepEqual(thinking.values, ["low", "medium", "high", "xhigh"]);
+	assert.equal(thinking.usage, "thinking low|medium|high|xhigh");
+	assert.ok(agyUsageLine().includes("thinking low|medium|high|xhigh"));
 	assert.deepEqual(
 		agyArgumentCompletions("thinking x").map((item) => item.value),
 		["xhigh"],

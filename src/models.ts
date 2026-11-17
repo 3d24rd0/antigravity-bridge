@@ -37,13 +37,13 @@ const DISCOVERY_TIMEOUT_MS = 8_000;
 export const MODELS_OUTPUT_CAP_BYTES = 1024 * 1024;
 
 /** Reasoning-effort tiers agy accepts via --effort. */
-export type AgyEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type AgyEffort = "low" | "medium" | "high" | "xhigh";
 
-/** low < medium < high < xhigh < max, for sorting/clamping. */
-const EFFORT_RANK: Record<AgyEffort, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 };
+/** low < medium < high < xhigh, for sorting/clamping. */
+const EFFORT_RANK: Record<AgyEffort, number> = { low: 0, medium: 1, high: 2, xhigh: 3 };
 
 /** pi thinking-effort order mirrors agy's, for clamping. */
-export const AGY_EFFORT_ORDER: readonly AgyEffort[] = ["low", "medium", "high", "xhigh", "max"];
+export const AGY_EFFORT_ORDER: readonly AgyEffort[] = ["low", "medium", "high", "xhigh"];
 
 /** Map pi's thinking level onto one of the tiers `efforts` the base actually
  *  supports, clamping to the nearest available. agy rejects an effort tier a
@@ -71,7 +71,8 @@ export function toAgyEffort<E extends AgyEffort>(
 			candidate = "xhigh";
 			break;
 		case "max":
-			candidate = "max";
+			// pi offers max; agy has no such tier. Clamp to its top one.
+			candidate = "xhigh";
 			break;
 		default:
 			candidate = efforts[0] ?? "low";
@@ -91,11 +92,11 @@ export function toAgyEffort<E extends AgyEffort>(
 
 /** Split an agy slug into (base, tier). tier is null when the slug has no
  *  tier suffix - a shape only unverified families should produce now, and those
- *  stay whole. Every tier agy's catalog can append belongs here, xhigh and max
- *  included: omitting xhigh turned Gemini 4 Hydrogen's XHigh tier into a
- *  second, toggle-less model instead of an effort level. Every Claude slug
- *  carries a tier suffix and collapses to its base. */
-const TIER_RE = /^(.+)-(xhigh|max|high|medium|low)$/;
+ *  stay whole. Every tier agy publishes belongs here, xhigh included:
+ *  omitting xhigh turned Gemini 4 Hydrogen's XHigh tier into a second,
+ *  toggle-less model instead of an effort level. Every Claude slug carries a
+ *  tier suffix and collapses to its base. */
+const TIER_RE = /^(.+)-(xhigh|high|medium|low)$/;
 
 /** agy emits clean slug ids (gemini-3.6-flash-high). Validate col1 of each
  *  line so a banner / auth / "Fetching models…" line can't register as a
