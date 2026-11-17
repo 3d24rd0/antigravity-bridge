@@ -11,14 +11,13 @@ import { showSettingsMenu, type MenuRow } from "./settings-menu.js";
 import { agyArgumentCompletions, agyUsageLine } from "./agy-command-surface.js";
 import { parseAuthPort, readLastUrl } from "./acp/browser-capture.js";
 import {
-	authChoice,
 	authFailureHint,
-	authModeLabel,
 	authRecovery,
 	authStepGuide,
 	detectAuthEnvironment,
 	type AuthMode,
 } from "./acp/auth-guide.js";
+import { authMethodLabel, isBrowserMethod, resolveAuthMethod } from "./acp/auth-methods.js";
 import type { UiSink } from "./session-ui.js";
 import { AGY_EFFORT_ORDER, type AgyModelEntry } from "./models.js";
 import type { SessionStore } from "./sessions.js";
@@ -286,23 +285,12 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				// the environment decides the steps, and discovering them afterwards
 				// means running other commands to find out what is happening.
 				const authEnv = detectAuthEnvironment();
-				const choice = authChoice(authEnv);
 				// The guide is the whole point, so it must reach a headless session
 				// too: notify() is a no-op there, stderr is not.
 				const say = (message: string, level: "info" | "warning" = "info"): void => {
 					if (ui && cmdCtx.hasUI) ui.notify(message, level);
 					else process.stderr.write(`[antigravity] ${message}\n`);
 				};
-				let mode: AuthMode = authEnv.hasGui && authEnv.hasOpener ? "browser" : "tunnel";
-				if (choice && ui && cmdCtx.hasUI) {
-					const labels = choice.options.map((m) => authModeLabel(m, authEnv));
-					const picked = await ui.select(choice.title, labels);
-					if (picked === undefined) return; // cancelled: nothing started yet
-					const idx = labels.indexOf(picked);
-					if (idx >= 0) mode = choice.options[idx] as AuthMode;
-				}
-				say(authStepGuide(mode, authEnv).join("\n"));
-				if (mode === "api-key") return;
 				ui?.notify("Preparing the ACP server (binary + auth settings)…", "info");
 				const status = await ensureAcpReady({ configBin: loadConfig().acp.bin, onProgress: (m) => ui?.notify(m, "info") });
 				ctx.fileLog.log(
@@ -330,8 +318,36 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					extraEnv: ctx.authCapture?.browserEnv,
 					authUrlFile: ctx.authCapture?.file,
 					log: ctx.acpLog,
+					// The server publishes the methods your account can use; that list
+					// is the only honest source, and it explains itself.
+					chooseMethod: async (methods) => {
+						let picked = resolveAuthMethod(methods);
+						const labels = methods.map(authMethodLabel);
+						if (methods.length > 1 && ui && cmdCtx.hasUI) {
+							const choiceText = await ui.select("How do you sign in to Antigravity?", labels);
+							if (choiceText === undefined) return undefined; // cancelled
+							picked = methods[labels.indexOf(choiceText)] ?? picked;
+						}
+						if (!picked) {
+							// Older server, no list: keep the historical default and guide
+							// from the environment alone.
+							say(authStepGuide(authEnv.hasGui && authEnv.hasOpener ? "browser" : "tunnel", authEnv).join("\n"));
+							return undefined;
+						}
+						const mode: AuthMode = isBrowserMethod(picked.id)
+							? authEnv.hasGui && authEnv.hasOpener
+								? "browser"
+								: "tunnel"
+							: "api-key";
+						say(authStepGuide(mode, authEnv, picked).join("\n"));
+						return picked.id;
+					},
 				});
 				ctx.fileLog.log("acp-auth", r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? "info" : "warn");
+				if (r.cancelled) {
+					say("Sign-in cancelled; nothing changed.");
+					return;
+				}
 				if (r.ok) {
 					ui?.notify(
 						r.note ? `Signed in (${r.note}). The ACP engine is ready; takes effect on the next pi start (or /reload).` : "Signed in. The ACP engine is ready; takes effect on the next pi start (or /reload).",

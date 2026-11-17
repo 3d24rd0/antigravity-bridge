@@ -1,4 +1,5 @@
 import { AcpConnection } from "./connection.js";
+import { resolveAuthMethod, type AgyAuthMethod } from "./auth-methods.js";
 import { hasAcpToken, writeAcpAuthVerified } from "./setup.js";
 
 // Explicit sign-in (/agy auth): spawn a short-lived server, send
@@ -21,6 +22,13 @@ export const AUTH_TIMEOUT_MS = 10 * 60_000;
 
 export interface AcpAuthOptions {
 	bin: string;
+	/** Explicit sign-in method id (oauth-personal, oauth-business,
+	 *  gemini-api-key, agent-platform). Wins over the picker. */
+	methodId?: string;
+	/** Called once the server has published its methods, so the caller can show
+	 *  the real list instead of a hardcoded one. Return the chosen id, or
+	 *  undefined to cancel the sign-in. */
+	chooseMethod?: (methods: readonly AgyAuthMethod[]) => string | undefined | Promise<string | undefined>;
 	binArgs?: string[];
 	cwd?: string;
 	extraEnv?: Record<string, string>;
@@ -51,6 +59,8 @@ export interface AcpAuthResult {
 	note?: string;
 	/** Failure reason (spawn, timeout, -32000 family, concurrent run). Absent when ok. */
 	error?: string;
+	/** The caller cancelled at the method picker: not a failure to report. */
+	cancelled?: boolean;
 }
 
 /** Live credential probe for the token-absent branch: a server with usable
@@ -85,7 +95,21 @@ export function runAcpAuth(opts: AcpAuthOptions): Promise<AcpAuthResult> {
 	const run = async (): Promise<AcpAuthResult> => {
 		try {
 			await conn.start();
-			await conn.request("authenticate", { methodId: "oauth-personal" }, opts.timeoutMs ?? AUTH_TIMEOUT_MS);
+			// Which method to use: an explicit override, else the caller's pick
+			// from the server's own list, else the server's first browser method,
+			// else the historical default.
+			const methods = conn.authMethods;
+			let requested = opts.methodId;
+			if (!requested && opts.chooseMethod) {
+				requested = await opts.chooseMethod(methods);
+				if (requested === undefined) return { ok: false, cancelled: true };
+			}
+			if (requested && methods.length > 0 && !methods.some((m) => m.id === requested)) {
+				return { ok: false, error: `the server does not offer the "${requested}" sign-in method` };
+			}
+			const methodId = requested ?? resolveAuthMethod(methods)?.id ?? "oauth-personal";
+			opts.log?.("auth-method", { methodId, offered: methods.map((m) => m.id) });
+			await conn.request("authenticate", { methodId }, opts.timeoutMs ?? AUTH_TIMEOUT_MS);
 			const deadline = Date.now() + grace;
 			while (!hasAcpToken(opts.tokenDir) && Date.now() < deadline) await sleep(200);
 			if (!hasAcpToken(opts.tokenDir)) {

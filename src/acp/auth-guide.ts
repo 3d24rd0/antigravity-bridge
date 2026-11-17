@@ -91,17 +91,26 @@ export function authModeLabel(mode: AuthMode, env: AuthEnvironment): string {
 
 /** What is about to happen, in order, before the blocking sign-in starts. Lines
  *  are user-facing and state the wait budget so nobody sits guessing. */
-export function authStepGuide(mode: AuthMode, env: AuthEnvironment): string[] {
+export function authStepGuide(
+	mode: AuthMode,
+	env: AuthEnvironment,
+	method?: { name: string; description?: string },
+): string[] {
 	const lines: string[] = [];
 	if (mode === "api-key") {
-		return [
-			"API key sign-in:",
-			'  1. Put {"auth":{"type":"gemini-api-key"}} in ~/.gemini/antigravity-acp/settings.json',
-			"  2. Export GEMINI_API_KEY in the environment pi runs in",
-			"  3. Run /agy auth again, then /reload",
+		// Credential methods (Gemini API key, Agent Platform/ADC) never open a
+		// page: the server authenticates from something already on the machine.
+		lines.push(`${method?.name ?? "Credential"} sign-in:`);
+		if (method?.description) lines.push(`  ${method.description}`);
+		lines.push(
+			"  1. Make the credential available to the process that runs pi:",
+			"     - Gemini API key: export GEMINI_API_KEY",
+			"     - Agent Platform: gcloud auth application-default login (ADC), or an API key",
+			"  2. Run /agy auth again, then /reload",
 			"",
-			"This is metered Gemini API billing, not your Antigravity subscription.",
-		];
+			"This is metered API billing, not your Antigravity subscription.",
+		);
+		return lines;
 	}
 	if (mode === "browser") {
 		lines.push("Signing in with your Google account. What happens:");
