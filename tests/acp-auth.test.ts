@@ -101,3 +101,50 @@ describe("acp/auth runAcpAuth", () => {
 		assert.equal(readAcpAuthVerified(path.join(dir, "verified.json")), false);
 	});
 });
+
+describe("acp/auth method selection", () => {
+	/** Advertise the server's real method list for this run. */
+	function withMethods(dir: string) {
+		return { ...authOpts(dir), extraEnv: { ...authOpts(dir).extraEnv, ACP_FAKE_METHODS: "1" } };
+	}
+
+	test("the chosen method from the server's list reaches authenticate", async () => {
+		const dir = tmpDir();
+		seedToken(dir);
+		const seen: string[][] = [];
+		const r = await runAcpAuth({
+			...withMethods(dir),
+			chooseMethod: (methods) => {
+				seen.push(methods.map((m) => m.id));
+				return "oauth-business";
+			},
+		});
+		assert.equal(r.ok, true, JSON.stringify(r));
+		assert.deepEqual(seen, [["oauth-personal", "oauth-business", "gemini-api-key"]]);
+		const log = fs.readFileSync(path.join(dir, "fake-log.jsonl"), "utf8");
+		const auth = log
+			.split("\n")
+			.filter(Boolean)
+			.map((l) => JSON.parse(l) as { method?: string; params?: { methodId?: string } })
+			.find((m) => m.method === "authenticate");
+		assert.equal(auth?.params?.methodId, "oauth-business");
+	});
+
+	test("cancelling at the picker reports cancelled and never authenticates", async () => {
+		const dir = tmpDir();
+		const r = await runAcpAuth({ ...withMethods(dir), chooseMethod: () => undefined });
+		assert.equal(r.ok, false);
+		assert.equal(r.cancelled, true);
+		const logPath = path.join(dir, "fake-log.jsonl");
+		const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "";
+		assert.equal(log.includes('"authenticate"'), false, "no authenticate must be sent");
+	});
+
+	test("asking for a method the server does not offer fails loudly", async () => {
+		const dir = tmpDir();
+		seedToken(dir);
+		const r = await runAcpAuth({ ...withMethods(dir), methodId: "telepathy" });
+		assert.equal(r.ok, false);
+		assert.match(r.error ?? "", /does not offer the "telepathy"/);
+	});
+});

@@ -146,7 +146,14 @@ process.stdin.on("data", (d) => {
 		if (!line) continue;
 		const msg = JSON.parse(line);
 		const reply = (result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }) + "\\n");
-		if (msg.method === "initialize") reply({ protocolVersion: 1, agentCapabilities: {}, authMethods: [] });
+		if (msg.method === "initialize") reply({
+			protocolVersion: 1,
+			agentCapabilities: {},
+			authMethods: [
+				{ id: "oauth-personal", name: "Log in with Google" },
+				{ id: "oauth-business", name: "Log in with Gemini Enterprise", description: "Enterprise account" },
+			],
+		});
 		else if (msg.method === "session/new") reply({
 			sessionId: "s-tier",
 			_meta: { antigravity: { tier: { name: "Google AI Pro", id: "g1-pro-tier", upgradeUri: "https://antigravity.google/g1-upgrade" } } },
@@ -164,6 +171,11 @@ process.stdin.on("data", (d) => {
 	});
 	await conn.start();
 	assert.equal(conn.planTier, null, "no plan before a session exists");
+	assert.deepEqual(
+		conn.authMethods.map((m) => m.id),
+		["oauth-personal", "oauth-business"],
+		"the server's sign-in methods are captured from initialize",
+	);
 	const session = await conn.newSession(dir);
 	assert.equal(session.sessionId, "s-tier");
 	assert.deepEqual(conn.planTier, {

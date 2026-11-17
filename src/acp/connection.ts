@@ -26,6 +26,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseAuthPort, readLastUrl } from "./browser-capture.js";
 import { parsePlanTier, type AgyPlanTier } from "./tier.js";
+import { parseAuthMethods, type AgyAuthMethod } from "./auth-methods.js";
 import { frameCarriesUsage } from "./events.js";
 import type { AgyUsage } from "../driver-types.js";
 import { redactText } from "../redact.js";
@@ -353,7 +354,8 @@ export class AcpConnection {
 		)) as Record<string, unknown> | undefined;
 		const info = result?.agentInfo;
 		if (typeof info === "object" && info !== null) this.agentInfo = info as Record<string, unknown>;
-		this.#opts.log("initialized", { version: this.serverVersion() });
+		this.authMethods = parseAuthMethods(result);
+		this.#opts.log("initialized", { version: this.serverVersion(), authMethods: this.authMethods.map((m) => m.id) });
 	}
 
 	serverVersion(): string | undefined {
@@ -364,6 +366,10 @@ export class AcpConnection {
 	/** True once the server answered -32601 for session/cancel on THIS
 	 *  process (probed lazily by the driver; never assumed). */
 	cancelSupported: boolean | null = null;
+
+	/** Sign-in methods the server advertised on initialize. Empty on builds
+	 *  that publish none. */
+	authMethods: AgyAuthMethod[] = [];
 
 	/** Signed-in plan reported by the server on session/new or session/load
 	 *  (`_meta.antigravity.tier`). Null until a session opens; the CLI engine

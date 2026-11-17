@@ -163,7 +163,16 @@ async function handle(msg) {
           sessionCapabilities: { list: {}, resume: {} },
           auth: { logout: {} },
         },
-        authMethods: [],
+        // ACP_FAKE_METHODS=1 advertises the four methods the real server
+        // publishes, so the picker/pass-through can be tested offline.
+        authMethods:
+          process.env.ACP_FAKE_METHODS === "1"
+            ? [
+                { id: "oauth-personal", name: "Log in with Google", description: "Log in with your Google account" },
+                { id: "oauth-business", name: "Log in with Gemini Enterprise", description: "Log in with your Gemini Enterprise account" },
+                { id: "gemini-api-key", name: "Gemini API key", description: "Use an API key with Gemini Developer API" },
+              ]
+            : [],
         agentInfo: { name: "fake-acp", title: "Fake ACP", version: "fake-1" },
       });
       return;

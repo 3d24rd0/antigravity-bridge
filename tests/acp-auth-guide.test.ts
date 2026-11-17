@@ -68,11 +68,23 @@ test("authStepGuide: the browser route does not mention tunnels", () => {
 	assert.doesNotMatch(lines, /ssh/);
 });
 
-test("authStepGuide: the API-key route is labelled as not the subscription", () => {
-	const lines = authStepGuide("api-key", env()).join("\n");
-	assert.match(lines, /gemini-api-key/);
+test("authStepGuide: a credential method explains itself and says it is not the subscription", () => {
+	const lines = authStepGuide("api-key", env(), {
+		name: "Gemini API key",
+		description: "Use an API key with Gemini Developer API",
+	}).join("\n");
+	assert.match(lines, /Gemini API key sign-in/);
+	assert.match(lines, /Gemini Developer API/);
 	assert.match(lines, /GEMINI_API_KEY/);
+	assert.match(lines, /gcloud auth application-default login/);
 	assert.match(lines, /not your Antigravity subscription/);
+	assert.doesNotMatch(lines, /ssh/, "credential methods never need a tunnel");
+});
+
+test("authStepGuide: a credential method without server wording still gives the steps", () => {
+	const lines = authStepGuide("api-key", env()).join("\n");
+	assert.match(lines, /Credential sign-in/);
+	assert.match(lines, /GEMINI_API_KEY/);
 });
 
 test("tunnelCommand: uses the real user and host, never a placeholder", () => {
