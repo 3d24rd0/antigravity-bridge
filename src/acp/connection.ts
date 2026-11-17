@@ -25,6 +25,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseAuthPort, readLastUrl } from "./browser-capture.js";
+import { parsePlanTier, type AgyPlanTier } from "./tier.js";
 import { frameCarriesUsage } from "./events.js";
 import type { AgyUsage } from "../driver-types.js";
 import { redactText } from "../redact.js";
@@ -364,6 +365,11 @@ export class AcpConnection {
 	 *  process (probed lazily by the driver; never assumed). */
 	cancelSupported: boolean | null = null;
 
+	/** Signed-in plan reported by the server on session/new or session/load
+	 *  (`_meta.antigravity.tier`). Null until a session opens; the CLI engine
+	 *  never reports one. */
+	planTier: AgyPlanTier | null = null;
+
 	async newSession(cwd: string): Promise<AcpSessionInfo> {
 		const result = (await this.guarded(
 			"session/new",
@@ -376,6 +382,7 @@ export class AcpConnection {
 		}
 		this.#updateSessionId = sessionId;
 		this.lastConfigOptions = result.configOptions;
+		this.planTier = parsePlanTier(result);
 		return { sessionId };
 	}
 
@@ -391,6 +398,7 @@ export class AcpConnection {
 				SESSION_OP_TIMEOUT_MS,
 			)) as Record<string, unknown> | undefined;
 			this.lastConfigOptions = result?.configOptions;
+			this.planTier = parsePlanTier(result);
 		} finally {
 			this.updateSuppression = false;
 		}

@@ -24,6 +24,7 @@
 import { randomUUID } from "node:crypto";
 import type { UsageEstimate } from "../config.js";
 import { SystemMessageSanitizer } from "../stream-sanitizer.js";
+import type { AgyPlanTier } from "./tier.js";
 import { AcpConnection, resolveAcpBinary, type AcpMcpServer, type AcpPermissionRequest } from "./connection.js";
 import type { AcpPermissionContext, AcpPermissionHandler } from "./connection.js";
 import { mapStopReason, mapUpdate, TextAccumulator, type AcpEditDiff } from "./events.js";
@@ -150,6 +151,9 @@ export class AcpDriver implements TurnDriver {
 	#serverVersion: string | undefined;
 	#lastSessionId: string | undefined;
 	#lastCancelSupported: boolean | null = null;
+	/** Plan reported by the last session; kept across reconnects so /agy doctor
+	 *  can still name it after a teardown. */
+	#lastPlanTier: AgyPlanTier | null = null;
 	#agentInfo: { name?: string; title?: string } | undefined;
 
 	constructor(opts: AcpDriverOptions) {
@@ -880,6 +884,7 @@ export class AcpDriver implements TurnDriver {
 				agentName: this.#agentInfo?.name,
 				agentTitle: this.#agentInfo?.title,
 				usageSeen: this.#conn?.usageSeen ?? false,
+				planTier: this.#conn?.planTier ?? this.#lastPlanTier,
 			},
 		};
 	}

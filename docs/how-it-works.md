@@ -170,7 +170,7 @@ Tab completes the surface: subcommands first, then their closed value sets.
 
 | Command | Effect |
 |---|---|
-| `/agy doctor` | Bridge state, driver counters, CLI and server versions, paths, effective config |
+| `/agy doctor` | Bridge state, driver counters, CLI and server versions, signed-in plan (ACP), paths, effective config |
 | `/agy quota` | Remaining subscription quota, per model group |
 | `/agy tasks [tail <id>]` | Background-task logs of this conversation (watch-only) |
 | `/agy artifacts [open <n \| name>]` | Files this conversation produced or received |

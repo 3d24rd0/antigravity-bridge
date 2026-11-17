@@ -44,6 +44,7 @@ import { checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_VERSION } from "./
 import { isValidAgyAgentName, listAgyAgents } from "./agents.js";
 import { formatSubagentRoster, type SubagentRoster } from "./subagent-roster.js";
 import { fetchAgyQuota, formatAgyQuotaReport } from "./usage.js";
+import { planSummary } from "./acp/tier.js";
 import { artifactOpenCommand, listAgyArtifacts } from "./artifacts.js";
 import { showArtifactsBrowser } from "./artifacts-ui.js";
 import { listAgyTasks, tailAgyTaskLog } from "./tasks.js";
@@ -421,6 +422,7 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					`  sessions:      ${ctx.store.size} bound`,
 					`  models:        ${ctx.entries.length} ${ctx.usingFallback ? "FALLBACK (agy models failed)" : "discovered"}`,
 					`  agy cli:       ${describeAgyVersionCheck(cliCheck)} (min ${MIN_AGY_VERSION})${cliSuffix}`,
+					`  plan:          ${planSummary(snap.acp?.planTier, engine)}`,
 					`  config:        ${CONFIG_PATH}`,
 					`  logs:          ${logsDir()} (attach recent days' files when reporting issues; set AGY_DEBUG=1 to capture details)`,
 				];

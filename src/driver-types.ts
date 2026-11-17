@@ -146,6 +146,10 @@ export interface DriverSnapshot {
 		/** Connections beyond the first this driver process made = server
 		 *  restarts (Gate D kills + stale-exit replacements). */
 		reconnects: number;
+		/** Signed-in plan, as the ACP server reports it on session/new
+		 *  (`_meta.antigravity.tier`). Absent until a session opens, and never
+		 *  present on the stream-json engine. */
+		planTier?: { name: string; id?: string; upgradeUri?: string } | null;
 		/** From the initialize handshake agentInfo block. */
 		agentName?: string;
 		agentTitle?: string;
