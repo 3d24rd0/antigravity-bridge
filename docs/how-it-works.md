@@ -162,8 +162,9 @@ Tab completes the surface: subcommands first, then their closed value sets.
 | Command | Effect |
 |---|---|
 | `/agy engine` | Explains that the engine comes from the model name |
-| `/agy auth` | Prepare the ACP server and open its Google sign-in |
-| `/agy auth-manual` | Print the manual sign-in steps for headless machines |
+| `/agy auth` | Prepare the ACP server and sign in. Detects the environment first and says what will happen; on a terminal without a browser it offers the tunnel or API-key route and prints the exact `ssh -N -L` command once Google's URL appears |
+| `/agy auth-url` | Reprint the last captured sign-in URL with this machine's tunnel command (the URL only appears once, as a notice) |
+| `/agy auth-manual` | Print the full manual sign-in reference |
 | `/agy acp-bin <path \| auto>` | Show or set the ACP server binary path |
 
 ### Diagnostics

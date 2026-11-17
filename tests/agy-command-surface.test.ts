@@ -36,7 +36,7 @@ test("completion offers subcommand names filtered by prefix", () => {
 	);
 	assert.deepEqual(
 		agyArgumentCompletions("auth").map((item) => item.value),
-		["auth", "auth-manual"],
+		["auth", "auth-manual", "auth-url"],
 	);
 	assert.ok(
 		all.every((item) => item.description && item.description.length > 0),
