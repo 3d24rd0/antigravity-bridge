@@ -9,6 +9,16 @@ import {
 import { showSettingsMenu, type MenuRow } from "./settings-menu.js";
 
 import { agyArgumentCompletions, agyUsageLine } from "./agy-command-surface.js";
+import { parseAuthPort, readLastUrl } from "./acp/browser-capture.js";
+import {
+	authChoice,
+	authFailureHint,
+	authModeLabel,
+	authStepGuide,
+	detectAuthEnvironment,
+	tunnelCommand,
+	type AuthMode,
+} from "./acp/auth-guide.js";
 import type { UiSink } from "./session-ui.js";
 import { AGY_EFFORT_ORDER, type AgyModelEntry } from "./models.js";
 import type { SessionStore } from "./sessions.js";
@@ -271,6 +281,27 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					ui?.notify(`the selected engine is ${loadConfig().engine}. /agy engine acp first, then /agy auth.`, "warning");
 					return;
 				}
+				// Explain the route before the blocking sign-in, not after a failure:
+				// the environment decides the steps, and discovering them afterwards
+				// means running other commands to find out what is happening.
+				const authEnv = detectAuthEnvironment();
+				const choice = authChoice(authEnv);
+				// The guide is the whole point, so it must reach a headless session
+				// too: notify() is a no-op there, stderr is not.
+				const say = (message: string, level: "info" | "warning" = "info"): void => {
+					if (ui && cmdCtx.hasUI) ui.notify(message, level);
+					else process.stderr.write(`[antigravity] ${message}\n`);
+				};
+				let mode: AuthMode = authEnv.hasGui && authEnv.hasOpener ? "browser" : "tunnel";
+				if (choice && ui && cmdCtx.hasUI) {
+					const labels = choice.options.map((m) => authModeLabel(m, authEnv));
+					const picked = await ui.select(choice.title, labels);
+					if (picked === undefined) return; // cancelled: nothing started yet
+					const idx = labels.indexOf(picked);
+					if (idx >= 0) mode = choice.options[idx] as AuthMode;
+				}
+				say(authStepGuide(mode, authEnv).join("\n"));
+				if (mode === "api-key") return;
 				ui?.notify("Preparing the ACP server (binary + auth settings)…", "info");
 				const status = await ensureAcpReady({ configBin: loadConfig().acp.bin, onProgress: (m) => ui?.notify(m, "info") });
 				ctx.fileLog.log(
@@ -306,7 +337,7 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						"info",
 					);
 				} else {
-					ui?.notify(`ACP sign-in failed (${r.error}).\nRun /agy auth to retry; /agy auth-manual has manual steps.`, "warning");
+					ui?.notify(`ACP sign-in failed (${r.error}).\n${authFailureHint(String(r.error))}`, "warning");
 				}
 				return;
 			}
@@ -359,6 +390,31 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					].join("\n"),
 					"info",
 				);
+				return;
+			}
+			if (sub === "auth-url") {
+				const file = ctx.authCapture?.file;
+				const url = file ? readLastUrl(file) : null;
+				if (!url) {
+					ui?.notify(
+						"No sign-in URL has been captured yet. Run /agy auth first: Google's URL appears here as soon as the server produces it.",
+						"info",
+					);
+					return;
+				}
+				const port = parseAuthPort(url);
+				const parts = ["Google sign-in URL for the ACP engine (valid until the flow completes):", "", url];
+				if (port) {
+					parts.push(
+						"",
+						"On another machine? Forward the loopback port before the page redirects:",
+						"",
+						`  ${tunnelCommand(port, detectAuthEnvironment())}`,
+					);
+				}
+				const text = parts.join("\n");
+				if (ui && cmdCtx.hasUI) ui.notify(text, "info");
+				else process.stderr.write(`[antigravity] ${text}\n`);
 				return;
 			}
 			if (sub === "doctor") {

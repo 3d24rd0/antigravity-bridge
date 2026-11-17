@@ -29,6 +29,7 @@ export const AGY_SUBCOMMANDS: readonly AgySubcommand[] = [
 	{ name: "doctor", description: "health check: driver state, versions, paths", usage: "doctor" },
 	{ name: "auth", description: "prepare the ACP server and sign in", usage: "auth" },
 	{ name: "auth-manual", description: "print the manual sign-in steps", usage: "auth-manual" },
+	{ name: "auth-url", description: "reprint the last sign-in URL with its ssh tunnel command", usage: "auth-url" },
 	{ name: "engine", description: "engine is chosen by the model name (/model)", usage: "engine" },
 	{ name: "acp-bin", description: "ACP server binary path", usage: "acp-bin <path|auto>", values: ["auto"] },
 	{

@@ -43,6 +43,7 @@ import {
 } from "./models.js";
 import { acpLoginPending, registerAgyCommand } from "./commands.js";
 import { captureUiSink, notifySafely, setStatusSafely, type UiSink } from "./session-ui.js";
+import { detectAuthEnvironment, tunnelCommand } from "./acp/auth-guide.js";
 import { SessionStore } from "./sessions.js";
 import {
 	APPROVAL_PARK_MS,
@@ -307,8 +308,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			if (port) {
 				parts.push(
 					"",
-					"SSH session? Forward the port on your machine first:",
-					`  ssh -N -L ${port}:127.0.0.1:${port} <user@host>`,
+					"On another machine? Forward the loopback port before the page redirects:",
+					`  ${tunnelCommand(port, detectAuthEnvironment())}`,
+					"",
+					"Lost this message? /agy auth-url reprints it.",
 				);
 			}
 			const text = parts.join("\n");
