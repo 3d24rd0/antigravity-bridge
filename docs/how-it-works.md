@@ -146,7 +146,7 @@ Tab completes the surface: subcommands first, then their closed value sets.
 | `/agy permissions on \| off` | Auto-approve native `agy` tools (`--dangerously-skip-permissions`) |
 | `/agy timeout <1-1440 \| off>` | Overall turn cap. Default: none on a TTY, 20 min headless |
 | `/agy agent <name \| off>` | Custom `agy` agent for CLI turns (`--agent`) |
-| `/agy thinking low \| medium \| high \| xhigh \| max` | Default reasoning level for `AskAntigravity`; a model that does not list the tier gets the nearest one it has |
+| `/agy thinking low \| medium \| high \| xhigh` | Default reasoning level for `AskAntigravity`; a model that does not list the tier gets the nearest one it has |
 | `/agy model <slug>` | Default model for `AskAntigravity` |
 | `/agy ask on \| off` | Register the `AskAntigravity` delegation tool |
 | `/agy stop [runId-prefix]` | Stop a background `AskAntigravity` run (no argument: the only running one) |

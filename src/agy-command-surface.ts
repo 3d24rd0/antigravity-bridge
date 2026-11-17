@@ -54,7 +54,7 @@ export const AGY_SUBCOMMANDS: readonly AgySubcommand[] = [
 	{
 		name: "thinking",
 		description: "AskAntigravity thinking level",
-		usage: "thinking low|medium|high|xhigh|max",
+		usage: `thinking ${AGY_EFFORT_ORDER.join("|")}`,
 		values: [...AGY_EFFORT_ORDER],
 	},
 	{ name: "agent", description: "custom agent for stream-json turns", usage: "agent <name|off>", values: ["off"] },

@@ -101,13 +101,14 @@ describe("catalog helpers", () => {
 });
 
 describe("levelToTier", () => {
-	it("maps pi's vocabulary onto agy's own tiers, xhigh and max included", () => {
+	it("maps pi's vocabulary onto agy's own tiers, xhigh included", () => {
 		expect(levelToTier("minimal")).toBe("low");
 		expect(levelToTier("low")).toBe("low");
 		expect(levelToTier("medium")).toBe("medium");
 		expect(levelToTier("high")).toBe("high");
 		expect(levelToTier("xhigh")).toBe("xhigh");
-		expect(levelToTier("max")).toBe("max");
+		// pi has a max level; agy does not. It clamps to agy's top tier.
+		expect(levelToTier("max")).toBe("xhigh");
 		expect(levelToTier("nonsense")).toBe("low");
 	});
 });
@@ -156,8 +157,8 @@ describe("resolveModel", () => {
 			model: "gemini-4-hydrogen",
 			effort: "xhigh",
 		});
-		// A configured default of max cannot reach a three-tier base either.
-		expect(resolveAgyModel("gemini-4-argon", catalog, "max")).toEqual({
+		// A configured default of xhigh cannot reach a three-tier base either.
+		expect(resolveAgyModel("gemini-4-argon", catalog, "xhigh")).toEqual({
 			model: "gemini-4-argon",
 			effort: "high",
 		});

@@ -303,8 +303,8 @@ export function loadConfig(configPath: string = defaultConfigPath()): AgyConfig 
 
 	const envThink = process.env.AGY_DEFAULT_THINKING;
 	const thinkRaw = (envThink ?? file.defaultThinking ?? DEFAULTS.defaultThinking).toLowerCase();
-	// agy's own tier vocabulary, not a second hardcoded list: a tier the CLI
-	// does not know falls back to the balanced default.
+	// agy's own tier vocabulary, not a second hardcoded list: a tier agy has no
+	// equivalent for (pi's max, a typo) falls back to the balanced default.
 	const defaultThinking: ThinkingTier = (AGY_EFFORT_ORDER as readonly string[]).includes(thinkRaw)
 		? (thinkRaw as ThinkingTier)
 		: "medium";
