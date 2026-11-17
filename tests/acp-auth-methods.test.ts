@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import {
 	authMethodLabel,
+	browserMethods,
 	isBrowserMethod,
 	parseAuthMethods,
 	resolveAuthMethod,
@@ -78,4 +79,17 @@ test("authMethodLabel: uses the server's own words", () => {
 		authMethodLabel({ id: "x", name: "Gemini API key", description: "Use an API key" }),
 		"Gemini API key - Use an API key",
 	);
+});
+
+test("browserMethods: only the methods this bridge can actually drive", () => {
+	// The credential methods are named, never offered: authenticate accepted
+	// gemini-api-key with no key present, so a pick could report success with
+	// nothing configured, and agent-platform needs ADC or a gcp settings block
+	// this bridge does not write.
+	assert.deepEqual(
+		browserMethods(parseAuthMethods(LIVE)).map((m) => m.id),
+		["oauth-personal", "oauth-business"],
+	);
+	assert.deepEqual(browserMethods([]), []);
+	assert.deepEqual(browserMethods([{ id: "gemini-api-key", name: "Key" }]), []);
 });

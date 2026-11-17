@@ -7,9 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import {
 	AUTH_URL_FILE_HINT,
-	authChoice,
 	authFailureHint,
-	authModeLabel,
 	authRecovery,
 	authStepGuide,
 	detectAuthEnvironment,
@@ -44,15 +42,6 @@ test("detectAuthEnvironment: any SSH marker counts as remote", () => {
 	assert.equal(detectAuthEnvironment({}, "linux").remote, false);
 });
 
-test("authChoice: a desktop session is offered no menu", () => {
-	assert.equal(authChoice(env({ hasGui: true, hasOpener: true })), null);
-});
-
-test("authChoice: no browser (or no opener) offers the two real options", () => {
-	assert.deepEqual(authChoice(env()), { title: "How should this machine sign in to Antigravity?", options: ["tunnel", "api-key"] });
-	assert.deepEqual(authChoice(env({ hasGui: true, hasOpener: false }))?.options, ["tunnel", "api-key"]);
-});
-
 test("authStepGuide: the tunnel route says what to do, in order, with the wait budget", () => {
 	const lines = authStepGuide("tunnel", env()).join("\n");
 	assert.match(lines, /URL appears here/);
@@ -68,36 +57,10 @@ test("authStepGuide: the browser route does not mention tunnels", () => {
 	assert.doesNotMatch(lines, /ssh/);
 });
 
-test("authStepGuide: a credential method explains itself and says it is not the subscription", () => {
-	const lines = authStepGuide("api-key", env(), {
-		name: "Gemini API key",
-		description: "Use an API key with Gemini Developer API",
-	}).join("\n");
-	assert.match(lines, /Gemini API key sign-in/);
-	assert.match(lines, /Gemini Developer API/);
-	assert.match(lines, /GEMINI_API_KEY/);
-	assert.match(lines, /gcloud auth application-default login/);
-	assert.match(lines, /not your Antigravity subscription/);
-	assert.doesNotMatch(lines, /ssh/, "credential methods never need a tunnel");
-});
-
-test("authStepGuide: a credential method without server wording still gives the steps", () => {
-	const lines = authStepGuide("api-key", env()).join("\n");
-	assert.match(lines, /Credential sign-in/);
-	assert.match(lines, /GEMINI_API_KEY/);
-});
-
 test("tunnelCommand: uses the real user and host, never a placeholder", () => {
 	const cmd = tunnelCommand(41234, env({ user: "ana", host: "buildbox" }));
 	assert.equal(cmd, "ssh -N -L 41234:127.0.0.1:41234 ana@buildbox");
 	assert.doesNotMatch(cmd, /<user@host>/);
-});
-
-test("authModeLabel: every mode explains itself", () => {
-	for (const mode of ["browser", "tunnel", "api-key"] as const) {
-		assert.ok(authModeLabel(mode, env()).length > 10, mode);
-	}
-	assert.match(authModeLabel("api-key", env()), /not your plan/);
 });
 
 test("authFailureHint: maps the common failures onto a next step", () => {

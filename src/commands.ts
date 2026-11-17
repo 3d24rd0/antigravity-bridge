@@ -17,7 +17,7 @@ import {
 	detectAuthEnvironment,
 	type AuthMode,
 } from "./acp/auth-guide.js";
-import { authMethodLabel, isBrowserMethod, resolveAuthMethod } from "./acp/auth-methods.js";
+import { authMethodLabel, browserMethods, isBrowserMethod } from "./acp/auth-methods.js";
 import type { UiSink } from "./session-ui.js";
 import { AGY_EFFORT_ORDER, type AgyModelEntry } from "./models.js";
 import type { SessionStore } from "./sessions.js";
@@ -321,33 +321,41 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					// The server publishes the methods your account can use; that list
 					// is the only honest source, and it explains itself.
 					chooseMethod: async (methods) => {
-						let picked = resolveAuthMethod(methods);
-						const labels = methods.map(authMethodLabel);
-						if (methods.length > 1 && ui && cmdCtx.hasUI) {
+						let explained = false;
+						// Only browser methods are offered: same verified flow, and the
+						// server validates the id. Credential methods are named, not
+						// chosen, because this bridge cannot make them usable.
+						const offered = browserMethods(methods);
+						const skipped = methods.filter((m) => !isBrowserMethod(m.id));
+						let picked = offered[0] ?? null;
+						const labels = offered.map(authMethodLabel);
+						if (offered.length > 1 && ui && cmdCtx.hasUI) {
 							const choiceText = await ui.select("How do you sign in to Antigravity?", labels);
 							if (choiceText === undefined) return undefined; // cancelled
-							picked = methods[labels.indexOf(choiceText)] ?? picked;
+							picked = offered[labels.indexOf(choiceText)] ?? picked;
+						}
+						if (skipped.length > 0 && (offered.length === 0 || offered.length > 1)) {
+							say(
+								`This server also offers ${skipped.map((m) => m.name ?? m.id).join(", ")}, which this bridge does not configure. /agy auth-manual covers their requirements.`,
+							);
 						}
 						if (!picked) {
-							// Older server, no list: keep the historical default and guide
-							// from the environment alone.
-							say(authStepGuide(authEnv.hasGui && authEnv.hasOpener ? "browser" : "tunnel", authEnv).join("\n"));
+							// Server published only credential methods: say so instead of
+							// trying one blindly.
+							say(
+								`This server offers only credential methods (${methods.map((m) => m.name ?? m.id).join(", ")}), which this bridge does not configure. /agy auth-manual has their requirements.`,
+								"warning",
+							);
+							explained = true;
 							return undefined;
 						}
-						const mode: AuthMode = isBrowserMethod(picked.id)
-							? authEnv.hasGui && authEnv.hasOpener
-								? "browser"
-								: "tunnel"
-							: "api-key";
-						say(authStepGuide(mode, authEnv, picked).join("\n"));
+						const mode: AuthMode = authEnv.hasGui && authEnv.hasOpener ? "browser" : "tunnel";
+						say(authStepGuide(mode, authEnv).join("\n"));
 						return picked.id;
 					},
 				});
 				ctx.fileLog.log("acp-auth", r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? "info" : "warn");
-				if (r.cancelled) {
-					say("Sign-in cancelled; nothing changed.");
-					return;
-				}
+				if (r.cancelled) return;
 				if (r.ok) {
 					ui?.notify(
 						r.note ? `Signed in (${r.note}). The ACP engine is ready; takes effect on the next pi start (or /reload).` : "Signed in. The ACP engine is ready; takes effect on the next pi start (or /reload).",

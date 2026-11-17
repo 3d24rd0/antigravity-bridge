@@ -73,6 +73,18 @@ export function resolveAuthMethod(
 	return methods.find((m) => isBrowserMethod(m.id)) ?? methods[0] ?? null;
 }
 
+/** The methods this bridge is willing to offer. Only the browser methods: they
+ *  run through the exact flow already verified here (URL capture, loopback
+ *  redirect, tunnel), and the server validates the id. The credential methods
+ *  (`gemini-api-key`, `agent-platform`) are deliberately NOT offered: probing
+ *  showed `authenticate` accepting `gemini-api-key` with no key present, so a
+ *  pick could be reported as signed in when nothing was configured, and
+ *  `agent-platform` needs ADC or a `gcp` block in settings.json that this
+ *  bridge does not write. Offering them is a claim we cannot back yet. */
+export function browserMethods(methods: readonly AgyAuthMethod[]): AgyAuthMethod[] {
+	return methods.filter((m) => isBrowserMethod(m.id));
+}
+
 /** Menu label built from the server's own words, so the choice explains
  *  itself without this module inventing descriptions. */
 export function authMethodLabel(method: AgyAuthMethod): string {
