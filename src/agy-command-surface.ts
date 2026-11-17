@@ -10,6 +10,7 @@
 // completed by name only.
 
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { AGY_EFFORT_ORDER } from "./models.js";
 
 export interface AgySubcommand {
 	/** Subcommand word typed after `/agy`. */
@@ -53,8 +54,8 @@ export const AGY_SUBCOMMANDS: readonly AgySubcommand[] = [
 	{
 		name: "thinking",
 		description: "AskAntigravity thinking level",
-		usage: "thinking low|medium|high",
-		values: ["low", "medium", "high"],
+		usage: "thinking low|medium|high|xhigh|max",
+		values: [...AGY_EFFORT_ORDER],
 	},
 	{ name: "agent", description: "custom agent for stream-json turns", usage: "agent <name|off>", values: ["off"] },
 	{

@@ -101,12 +101,13 @@ describe("catalog helpers", () => {
 });
 
 describe("levelToTier", () => {
-	it("clamps the pi vocabulary onto agy's three tiers", () => {
+	it("maps pi's vocabulary onto agy's own tiers, xhigh and max included", () => {
 		expect(levelToTier("minimal")).toBe("low");
 		expect(levelToTier("low")).toBe("low");
 		expect(levelToTier("medium")).toBe("medium");
-		expect(levelToTier("xhigh")).toBe("high");
-		expect(levelToTier("max")).toBe("high");
+		expect(levelToTier("high")).toBe("high");
+		expect(levelToTier("xhigh")).toBe("xhigh");
+		expect(levelToTier("max")).toBe("max");
 		expect(levelToTier("nonsense")).toBe("low");
 	});
 });
@@ -122,6 +123,45 @@ describe("resolveModel", () => {
 		entry("gemini-4-argon-medium", "medium"),
 		entry("gemini-4-argon-high", "high"),
 	];
+
+	it("reads agy's wider tiers out of the catalog", () => {
+		// Hydrogen ships xhigh; the alias/tier parsing must see it as a tier of
+		// the base, not as an unknown suffix on a fixed model.
+		expect(parseModelLine("gemini-4-hydrogen-xhigh  Gemini 4 Hydrogen (XHigh)")).toEqual({
+			full: "gemini-4-hydrogen-xhigh",
+			family: "other",
+			version: "4",
+			tier: "xhigh",
+		});
+	});
+
+	it("sends xhigh only to a base that lists it, and clamps otherwise", () => {
+		const hydrogen = [
+			entry("gemini-4-hydrogen-low", "low"),
+			entry("gemini-4-hydrogen-medium", "medium"),
+			entry("gemini-4-hydrogen-high", "high"),
+			entry("gemini-4-hydrogen-xhigh", "xhigh"),
+		];
+		expect(resolveAgyModel("gemini-4-hydrogen-xhigh", hydrogen, "medium")).toEqual({
+			model: "gemini-4-hydrogen",
+			effort: "xhigh",
+		});
+		// Argon stops at high: an xhigh preference degrades to the best it has.
+		expect(resolveAgyModel("gemini-4-argon", catalog, "medium", "xhigh")).toEqual({
+			model: "gemini-4-argon",
+			effort: "high",
+		});
+		// Same request, hydrogen: honored.
+		expect(resolveAgyModel("gemini-4-hydrogen", hydrogen, "medium", "xhigh")).toEqual({
+			model: "gemini-4-hydrogen",
+			effort: "xhigh",
+		});
+		// A configured default of max cannot reach a three-tier base either.
+		expect(resolveAgyModel("gemini-4-argon", catalog, "max")).toEqual({
+			model: "gemini-4-argon",
+			effort: "high",
+		});
+	});
 
 	it("exact full-string match wins and splits the tier for gemini bases", () => {
 		expect(resolveAgyModel("gemini-3.6-flash-high", catalog, "medium")).toEqual({

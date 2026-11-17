@@ -61,7 +61,7 @@ export function buildTimeBudgetNotice(timeoutMs: number): string {
 
 // --- Types -----------------------------------------------------------------
 
-export type ThinkingTier = "low" | "medium" | "high";
+export type ThinkingTier = "low" | "medium" | "high" | "xhigh" | "max";
 export type Family = "flash" | "argon" | "other";
 
 export interface ModelEntry {
@@ -82,15 +82,26 @@ export interface ResolvedModel {
 
 export type Mode = "plan" | "accept-edits";
 
-/** Per-family fallback tier when none is specified and no config default.
- *  Flash and Argon both ship low/medium/high and default to medium. */
+/** Per-family balanced tier, for callers that hold no preference at all.
+ *  Flash and Argon both ship low/medium/high and default to medium. Tier
+ *  selection itself clamps the requested tier (explicit or configured) with
+ *  nearestTier, so a hard default is never silently substituted for a
+ *  narrower base. */
 export const FAMILY_DEFAULT_TIER: Record<Family, ThinkingTier> = {
 	flash: "medium",
 	argon: "medium",
 	other: "medium",
 };
 
-export const TIER_RANK: Record<ThinkingTier, number> = { low: 0, medium: 1, high: 2 };
+export const TIER_RANK: Record<ThinkingTier, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 };
+
+/** Tier suffix agy appends to a base slug. `xhigh`/`max` are listed before
+ *  `high` so a qualified slug is never read as the shorter tier with a stray
+ *  letter on the base. One definition feeds the parser, the alias reader and
+ *  the base/effort split, so the three can never disagree. */
+const TIER_SUFFIX_RE = /-(xhigh|max|high|medium|low)$/;
+/** The same tiers as a free-standing word, for aliases like "flash xhigh". */
+const TIER_WORD_RE = /\b(xhigh|max|low|medium|high)\b/;
 
 /** pi thinking-level vocabulary -> agy tier, for the thinking/effort tool
  *  params. Unknown values fall to low (agy always thinks something). */
@@ -102,9 +113,11 @@ export function levelToTier(level: string): ThinkingTier {
 		case "medium":
 			return "medium";
 		case "high":
-		case "xhigh":
-		case "max":
 			return "high";
+		case "xhigh":
+			return "xhigh";
+		case "max":
+			return "max";
 		default:
 			return "low";
 	}
@@ -172,7 +185,7 @@ export function parseModelLine(line: string): ModelEntry | null {
 	const versionMatch = lower.startsWith("gemini-") ? lower.match(/(\d+(?:\.\d+)?)/) : lower.match(/(\d+\.\d+)/);
 	const version = versionMatch ? versionMatch[1] : null;
 
-	const tierMatch = lower.match(/-(low|medium|high)$/);
+	const tierMatch = lower.match(TIER_SUFFIX_RE);
 	const tier = tierMatch ? (tierMatch[1] as ThinkingTier) : null;
 
 	return { full, family, version, tier };
@@ -200,7 +213,10 @@ function nearestTier(available: ThinkingTier[], preferred: ThinkingTier): Thinki
  *  unsupported --effort. */
 function toResolved(full: string, tier: ThinkingTier | null): ResolvedModel {
 	if (tier && /^(gemini|claude)-/.test(full.toLowerCase())) {
-		return { model: full.replace(/-(low|medium|high)$/, ""), effort: tier };
+		// Strip whatever tier suffix agy printed, not just the original three:
+		// leaving `-xhigh` on the model while also passing --effort would send
+		// agy a qualified slug AND an effort.
+		return { model: full.replace(TIER_SUFFIX_RE, ""), effort: tier };
 	}
 	return { model: full };
 }
@@ -221,9 +237,9 @@ function resolveTieredBase(
 	const variants = entries.filter((e) => e.full.toLowerCase().startsWith(`${needle}-`));
 	if (variants.length > 0) {
 		const tiers = variants.map((e) => e.tier).filter((t): t is ThinkingTier => t !== null);
-		const preferred =
-			preferredTier ??
-			(tiers.includes(defaultThinking) ? defaultThinking : FAMILY_DEFAULT_TIER.other);
+		// The configured default clamps like an explicit tier: with default=max a
+		// three-tier base gets high, not a silent drop to the balanced default.
+		const preferred = preferredTier ?? defaultThinking;
 		const chosen = nearestTier(tiers, preferred);
 		const picked = variants.find((e) => e.tier === chosen) ?? variants[0];
 		return toResolved(picked.full, picked.tier);
@@ -270,8 +286,22 @@ export function resolveAgyModel(
 			: null;
 	const versionMatch = lower.match(/(\d+(?:\.\d+)?)/);
 	const version = versionMatch ? versionMatch[1] : null;
-	const tierMatch = lower.match(/\b(low|medium|high)\b/);
+	const tierMatch = lower.match(TIER_WORD_RE);
 	const tier = tierMatch ? (tierMatch[1] as ThinkingTier) : null;
+
+	// A base slug the catalog actually advertises resolves as that base, even
+	// for a family with no friendly alias (gemini-4-hydrogen). The bare word
+	// "gemini" is excluded so it keeps its documented meaning: the default
+	// flash family.
+	const bare = lower === "" || lower === "default" || lower === "gemini";
+	if (!family && !bare) {
+		if (
+			entries.some((e) => e.full.toLowerCase().startsWith(`${lower}-`)) ||
+			entries.some((e) => e.full.toLowerCase() === lower)
+		) {
+			return resolveTieredBase(lower, entries, defaultThinking, preferredTier);
+		}
+	}
 
 	// "gemini" alone, "default", or empty -> default family (flash).
 	if (!family && (/gemini/.test(lower) || lower === "" || lower === "default")) {
@@ -319,10 +349,7 @@ export function resolveAgyModel(
 	);
 	if (familyTiers.size === 0) return toResolved(candidates[0].full, null);
 
-	const preferred =
-		preferredTier ??
-		tier ??
-		(familyTiers.has(defaultThinking) ? defaultThinking : FAMILY_DEFAULT_TIER[family]);
+	const preferred = preferredTier ?? tier ?? defaultThinking;
 	const chosenTier = nearestTier([...familyTiers], preferred);
 	const picked = candidates.find((e) => e.tier === chosenTier) ?? candidates[0];
 	return toResolved(picked.full, picked.tier);
