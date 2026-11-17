@@ -156,6 +156,15 @@ export function authFailureHint(error: string): string {
 	if (e.includes("no usable credentials")) {
 		return "The server accepted the sign-in but kept no usable credentials. Finish the Google page if it is still open, then run /agy auth again.";
 	}
+	if (e.includes("unsupported auth method")) {
+		return "This build of the server does not offer that method. /agy auth lists the ones it does, and /agy doctor shows the server version.";
+	}
+	if (e.includes("agent platform authentication")) {
+		return "Agent Platform needs its own credentials: GOOGLE_API_KEY, or GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION (or gcp.project and gcp.location in the server's settings.json). This is not your Antigravity subscription.";
+	}
+	if ((e.includes("api key") || e.includes("api_key")) && (e.includes("must be set") || e.includes("missing"))) {
+		return "That method needs a credential the server cannot see. Export GEMINI_API_KEY (or configure it in the server's settings.json), then run /agy auth again.";
+	}
 	if (e.includes("could not") && e.includes("binar")) {
 		return "The server binary is missing or unreadable. /agy doctor shows the path; /agy acp-bin auto re-runs setup.";
 	}

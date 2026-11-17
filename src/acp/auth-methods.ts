@@ -12,6 +12,14 @@
 // The bridge used to hardcode `oauth-personal`, which silently excluded
 // enterprise, Vertex and API-key accounts. Reading the list fixes that and
 // keeps working if Google adds or renames a method.
+//
+// The server validates the id (probed 2026-11): an unknown one answers
+// -32602 "Unsupported auth method", so these ids are real routes and not
+// decoration. A route being offered is not the same as it being usable: the
+// credential methods need their own material, and the server says exactly what
+// is missing ("GOOGLE_API_KEY, or ... GOOGLE_CLOUD_PROJECT ... must be set for
+// Agent Platform authentication"). That message is surfaced verbatim rather
+// than replaced by a generic retry hint.
 
 export interface AgyAuthMethod {
 	id: string;
