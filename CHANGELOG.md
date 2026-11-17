@@ -13,6 +13,10 @@
 - Removed a stale `models.ts` header comment claiming a `HIDDEN_FAMILY_RE` dropped the gpt-oss family. No such filter exists: gpt-oss registers as a fixed `-cli` model because agy lists a single tier for it.
 - **`AskAntigravity` and its default thinking level cover agy's whole tier set.** `/agy thinking`, `defaultThinking` and `AGY_DEFAULT_THINKING` accept `low|medium|high|xhigh`, the `thinking`/`effort` tool params no longer clamp `xhigh` down to `high` (pi's `max` still clamps, to `xhigh`), and the alias parser reads `xhigh` as a tier of its base. The per-model invariant is unchanged: a tier is only ever passed when the delegated model lists it, so `xhigh` on a three-tier model resolves to `high` instead of an unsupported `--effort`. The `-xhigh` suffix is now stripped from the base on every gemini/claude slug, which fixes a double-tier argv (`--model …-xhigh --effort xhigh`) that the wider vocabulary would otherwise have produced.
 - A configured default now clamps like an explicit tier: with `defaultThinking: "xhigh"`, a model that lists only low/medium/high gets `high` rather than a silent drop to the balanced `medium`.
+### Fixed
+
+- **A reload during startup no longer kills pi ([#9](https://github.com/3d24rd0/antigravity-bridge/issues/9)).** `session_start` starts two fire-and-forget promises (agy version check, ACP self-heal) and their callbacks read the captured `ctx` for `hasUI` and `ui.notify`. pi invalidates that ctx on `newSession`, `fork`, `switchSession` or `/reload`, and reading it afterwards throws ("This extension ctx is stale..."), which a promise with no `.catch()` turned into an `uncaughtException` that exited pi. The handler now captures the UI once, synchronously, into a sink (`src/session-ui.ts`) that swallows the stale throw, both startup promises carry a `.catch()` that logs to the daily file log, and the driver-facing notify paths (`activeUi`) go through the same guard. The ACP setup path takes a sink too, so reviving it cannot reintroduce the crash. Diagnosed and reported by @hidalgocaparroscristobal.
+
 
 ## [1.3.1]
 

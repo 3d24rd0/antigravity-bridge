@@ -42,6 +42,7 @@ import {
 	type AgyModelEntry,
 } from "./models.js";
 import { acpLoginPending, registerAgyCommand } from "./commands.js";
+import { captureUiSink, notifySafely, setStatusSafely, type UiSink } from "./session-ui.js";
 import { SessionStore } from "./sessions.js";
 import {
 	APPROVAL_PARK_MS,
@@ -196,8 +197,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		} else {
 			text = `Antigravity warning: ${event}`;
 		}
-		if (activeUi) activeUi.notify(text, "warning");
-		else console.error(`[antigravity-bridge] ${text}`);
+		if (!activeUi) console.error(`[antigravity-bridge] ${text}`);
+		else notifySafely(activeUi, text, "warning");
 	};
 	fileLog.log(
 		"extension-load",
@@ -311,8 +312,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				);
 			}
 			const text = parts.join("\n");
-			if (activeUi) activeUi.notify(text, "warning");
-			else console.error(`[antigravity-bridge acp] ${text}`);
+			if (!activeUi) console.error(`[antigravity-bridge acp] ${text}`);
+			else notifySafely(activeUi, text, "warning");
 			return;
 		}
 		if (!acpFailures.has(msg)) return;
@@ -466,7 +467,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			return;
 		}
 		pendingNativeTools = Math.max(0, pendingNativeTools - 1);
-		if (pendingNativeTools === 0) activeUi?.setStatus("agy-native", undefined);
+		if (pendingNativeTools === 0) setStatusSafely(activeUi, "agy-native", undefined);
 		// Bound persisted session size; the ACP result and diff may be megabytes.
 		pi.appendEntry<NativeDisplayEvent>("agy-native-event", {
 			...event,
@@ -639,10 +640,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	 *  removes the wait. Fire-and-forget: the caller already toasted the
 	 *  promise, failures land in the daily log + a warning toast. */
 	// eslint-disable-next-line @typescript-eslint/no-inner-declarations -- hoisted: registerAgyCommand below injects it
-	async function runAcpPickSetup(ctx: { ui: ExtensionUIContext }): Promise<void> {
+	async function runAcpPickSetup(sink: UiSink): Promise<void> {
 		acpSelfHealRan = true;
 		let lastPhase = "";
-		ctx.ui.setStatus("agy-acp", "downloading ACP server…");
+		sink.setStatus("agy-acp", "downloading ACP server…");
 		try {
 			const status = await ensureAcpReady({
 				configBin: loadConfig().acp.bin,
@@ -652,14 +653,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					// milestones only (download start, unpacking, installed) - same
 					// line-in-chat feel as other extensions' notify() notices. The
 					// percent variant updates every chunk and would spam the chat.
-					ctx.ui.setStatus("agy-acp", m);
+					sink.setStatus("agy-acp", m);
 					if (m !== lastPhase && !/\d+%/.test(m)) {
-						ctx.ui.notify(m, "info");
+						sink.notify(m, "info");
 						lastPhase = m;
 					}
 				},
 			});
-			ctx.ui.setStatus("agy-acp", undefined);
+			sink.setStatus("agy-acp", undefined);
 			fileLog.log(
 				"acp-setup",
 				status.ok
@@ -668,17 +669,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				status.ok ? "info" : "warn",
 			);
 			if (!status.ok) {
-				ctx.ui.notify(`ACP auto-setup failed (${status.error}).\n${status.manual}`, "warning");
+				sink.notify(`ACP auto-setup failed (${status.error}).\n${status.manual}`, "warning");
 				return;
 			}
 			// Spread, not a bare acp patch: a bare {bin} patch would drop
 			// sibling keys (usageEstimate) from the file.
 			saveConfig({ acp: { ...loadConfig().acp, bin: status.bin } });
 			if (!status.needsLogin) {
-				ctx.ui.notify(`ACP server ready (auth: ${status.auth}). Restart applies the engine.`, "info");
+				sink.notify(`ACP server ready (auth: ${status.auth}). Restart applies the engine.`, "info");
 				return;
 			}
-			ctx.ui.notify(
+			sink.notify(
 				"ACP server ready. Signing in: the Google sign-in opens in your browser and completes when you finish it.",
 				"info",
 			);
@@ -689,15 +690,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			});
 			fileLog.log("acp-auth", r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? "info" : "warn");
 			if (r.ok) {
-				ctx.ui.notify(
+				sink.notify(
 					r.note ? `Signed in (${r.note}). The ACP engine is ready; restart applies it.` : "Signed in. The ACP engine is ready; restart applies it.",
 					"info",
 				);
-			} else ctx.ui.notify(`ACP sign-in failed (${r.error}).\nRun /agy auth to retry; /agy auth-manual has manual steps.`, "warning");
+			} else sink.notify(`ACP sign-in failed (${r.error}).\nRun /agy auth to retry; /agy auth-manual has manual steps.`, "warning");
 		} catch (err) {
-			ctx.ui.setStatus("agy-acp", undefined);
+			sink.setStatus("agy-acp", undefined);
 			fileLog.log("acp-setup", { error: String(err) }, "warn");
-			ctx.ui.notify(`ACP setup failed (${String(err)}). /agy auth retries; /agy doctor inspects.`, "warning");
+			sink.notify(`ACP setup failed (${String(err)}). /agy auth retries; /agy doctor inspects.`, "warning");
 		}
 	}
 
@@ -706,13 +707,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// normal toolUse loop (native cards, permissions, hooks) - no patch, no
 	// privileged API. Started on session_start, torn down on session_shutdown.
 	pi.on("session_start", async (event, ctx) => {
-		if (ctx.hasUI) activeUi = ctx.ui;
+		// Capture the UI before the first await. pi invalidates this ctx on
+		// reload or session replacement, and every later read of it throws
+		// ("This extension ctx is stale..."), which a fire-and-forget promise
+		// cannot survive. See src/session-ui.ts.
+		const ui = captureUiSink(ctx);
+		if (ui.available) activeUi = ctx.ui;
 		// agy presence check: warn if agy CLI binary is missing, since CLI variants require it.
 		if (!agyMissingWarned && !isAgyInstalled(binary)) {
 			agyMissingWarned = true;
 			const msg = agyMissingMessage();
-			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
-			else console.error(`[antigravity-bridge] ${msg}`);
+			if (!ui.notify(msg, "warning")) console.error(`[antigravity-bridge] ${msg}`);
 		}
 		// Version gate: an agy older than MIN_AGY_VERSION fails turns with raw stream errors.
 		if (!agyVersionWarned && isAgyInstalled(binary)) {
@@ -720,9 +725,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				if (agyVersionWarned || check.status !== "unsupported") return;
 				agyVersionWarned = true;
 				const msg = `agy ${check.version} is too old; install ${MIN_AGY_VERSION} or newer. Stream-json turns may fail in confusing ways until then (/agy doctor inspects).`;
-				if (ctx.hasUI) ctx.ui.notify(msg, "warning");
-				else console.error(`[antigravity-bridge] ${msg}`);
-			});
+				if (!ui.notify(msg, "warning")) console.error(`[antigravity-bridge] ${msg}`);
+			})
+			.catch((err: unknown) => fileLog.log("agy-version-check-failed", { error: String(err) }, "warn"));
 		}
 		// Legacy cleanup: users who ran the old consent-gated patcher still
 		// carry pi.invokeTool in their installed pi. Inert, but tell them once
@@ -734,8 +739,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				// is never silently dropped.
 				const msg =
 					"Your pi install still carries the old pi.invokeTool patch. It is unused and harmless; a pi update also removes it. To restore the original files from the backup now: /agy patch-cleanup";
-				if (ctx.hasUI) ctx.ui.notify(msg, "info");
-				else console.error(`[antigravity-bridge] ${msg}`);
+				if (!ui.notify(msg, "info")) console.error(`[antigravity-bridge] ${msg}`);
 				saveConfig({ patchCleanupNotified: true });
 			}
 		} catch {
@@ -758,15 +762,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					}
 					if (status.needsLogin) {
 						const msg = acpLoginPending();
-						if (ctx.hasUI) ctx.ui.notify(msg, "warning");
-						else console.error(`[antigravity-bridge] ${msg}`);
+						if (!ui.notify(msg, "warning")) console.error(`[antigravity-bridge] ${msg}`);
 					}
 					return;
 				}
 				const msg = `ACP auto-setup failed (${status.error}).\n${status.manual}`;
-				if (ctx.hasUI) ctx.ui.notify(msg, "warning");
-				else console.error(`[antigravity-bridge] ${msg}`);
-			});
+				if (!ui.notify(msg, "warning")) console.error(`[antigravity-bridge] ${msg}`);
+			})
+			.catch((err: unknown) => fileLog.log("acp-self-heal-failed", { error: String(err) }, "warn"));
 		}
 		// Bridge failure logger. Routine lifecycle (listening,
 		// bridge-config-written/removed, closed) is normal startup/teardown
@@ -808,8 +811,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			if (routineAbort) return;
 			if (!failures.has(s)) return;
 			const msg = `[antigravity-bridge mcp] ${s}${d !== undefined ? " " + JSON.stringify(d) : ""}`;
-			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
-			else console.error(msg);
+			if (!ui.notify(msg, "warning")) console.error(msg);
 		};
 		// Start the bridge unless the user turned it off. No patch gate, no
 		// consent flow: calls route through pi's normal toolUse loop.
