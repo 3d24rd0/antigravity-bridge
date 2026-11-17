@@ -130,3 +130,47 @@ describe("acp connection auth-invalidated hook", () => {
 		assert.equal(translated.name, "AcpAuthError");
 	});
 });
+
+// The signed-in plan rides on session/new under the vendor meta extension
+// (_meta.antigravity.tier), verified live against agy_acp_server 1.4.1.
+test("acp connection: session/new reports the signed-in plan", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-tier-"));
+	const server = `
+let buf = "";
+process.stdin.on("data", (d) => {
+	buf += d;
+	let i;
+	while ((i = buf.indexOf("\\n")) >= 0) {
+		const line = buf.slice(0, i).trim();
+		buf = buf.slice(i + 1);
+		if (!line) continue;
+		const msg = JSON.parse(line);
+		const reply = (result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }) + "\\n");
+		if (msg.method === "initialize") reply({ protocolVersion: 1, agentCapabilities: {}, authMethods: [] });
+		else if (msg.method === "session/new") reply({
+			sessionId: "s-tier",
+			_meta: { antigravity: { tier: { name: "Google AI Pro", id: "g1-pro-tier", upgradeUri: "https://antigravity.google/g1-upgrade" } } },
+		});
+	}
+});
+`;
+	const conn = new AcpConnection({
+		cwd: dir,
+		bin: process.execPath,
+		binArgs: ["-e", server],
+		log: () => {},
+		onUpdate: () => {},
+		onExit: () => {},
+	});
+	await conn.start();
+	assert.equal(conn.planTier, null, "no plan before a session exists");
+	const session = await conn.newSession(dir);
+	assert.equal(session.sessionId, "s-tier");
+	assert.deepEqual(conn.planTier, {
+		name: "Google AI Pro",
+		id: "g1-pro-tier",
+		upgradeUri: "https://antigravity.google/g1-upgrade",
+	});
+	conn.kill();
+	fs.rmSync(dir, { recursive: true, force: true });
+});
