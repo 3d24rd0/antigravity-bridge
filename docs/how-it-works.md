@@ -162,7 +162,7 @@ Tab completes the surface: subcommands first, then their closed value sets.
 | Command | Effect |
 |---|---|
 | `/agy engine` | Explains that the engine comes from the model name |
-| `/agy auth` | Prepare the ACP server and sign in. Asks the server which sign-in methods your account has (`oauth-personal`, `oauth-business` for Gemini Enterprise, `gemini-api-key`, `agent-platform`) and offers them with their own wording; detects the environment and explains what will happen, prints the exact `ssh -N -L` command for a terminal without a browser, and reprints the URL with the command if the sign-in fails. The URL is also saved in `~/.pi/agent/antigravity-bridge/acp-auth-urls.log` |
+| `/agy auth` | Prepare the ACP server and sign in. Asks the server which sign-in methods your account has and offers the browser ones (`oauth-personal`, `oauth-business` for Gemini Enterprise) with their own wording; credential methods (`gemini-api-key`, `agent-platform`) are named but not driven, since they need credentials and server settings this bridge does not manage. Detects the environment and explains what will happen, prints the exact `ssh -N -L` command for a terminal without a browser, and reprints the URL with the command if the sign-in fails. The URL is also saved in `~/.pi/agent/antigravity-bridge/acp-auth-urls.log` |
 | `/agy auth-manual` | Print the full manual sign-in reference |
 | `/agy acp-bin <path \| auto>` | Show or set the ACP server binary path |
 

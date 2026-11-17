@@ -14,7 +14,9 @@
 import os from "node:os";
 import path from "node:path";
 
-export type AuthMode = "browser" | "tunnel" | "api-key";
+/** How the browser step reaches the user. Credential methods are not a mode
+ *  here: this bridge does not configure them (see auth-methods.ts). */
+export type AuthMode = "browser" | "tunnel";
 
 /** Where the BROWSER wrapper records the sign-in URL: the durable copy, since
  *  the notice is one-shot and the flow blocks. */
@@ -69,49 +71,10 @@ export function detectAuthEnvironment(
 	return { hasGui, remote, hasOpener, platform, user, host };
 }
 
-/** Options offered when the route is genuinely ambiguous. A desktop session is
- *  not ambiguous: opening the browser is the answer and a menu would only add a
- *  step. */
-export function authChoice(env: AuthEnvironment): { title: string; options: AuthMode[] } | null {
-	if (env.hasGui && env.hasOpener) return null;
-	return { title: "How should this machine sign in to Antigravity?", options: ["tunnel", "api-key"] };
-}
-
-/** One line describing the option, for the selector. */
-export function authModeLabel(mode: AuthMode, env: AuthEnvironment): string {
-	switch (mode) {
-		case "browser":
-			return "Open the browser here (fastest)";
-		case "tunnel":
-			return "Give me the URL + exact ssh tunnel command";
-		case "api-key":
-			return "Use a Gemini API key instead (paid API, not your plan)";
-	}
-}
-
 /** What is about to happen, in order, before the blocking sign-in starts. Lines
  *  are user-facing and state the wait budget so nobody sits guessing. */
-export function authStepGuide(
-	mode: AuthMode,
-	env: AuthEnvironment,
-	method?: { name: string; description?: string },
-): string[] {
+export function authStepGuide(mode: AuthMode, env: AuthEnvironment): string[] {
 	const lines: string[] = [];
-	if (mode === "api-key") {
-		// Credential methods (Gemini API key, Agent Platform/ADC) never open a
-		// page: the server authenticates from something already on the machine.
-		lines.push(`${method?.name ?? "Credential"} sign-in:`);
-		if (method?.description) lines.push(`  ${method.description}`);
-		lines.push(
-			"  1. Make the credential available to the process that runs pi:",
-			"     - Gemini API key: export GEMINI_API_KEY",
-			"     - Agent Platform: gcloud auth application-default login (ADC), or an API key",
-			"  2. Run /agy auth again, then /reload",
-			"",
-			"This is metered API billing, not your Antigravity subscription.",
-		);
-		return lines;
-	}
 	if (mode === "browser") {
 		lines.push("Signing in with your Google account. What happens:");
 		lines.push("  1. Your browser opens the Google sign-in page.");
