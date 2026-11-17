@@ -6,9 +6,11 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import {
+	AUTH_URL_FILE_HINT,
 	authChoice,
 	authFailureHint,
 	authModeLabel,
+	authRecovery,
 	authStepGuide,
 	detectAuthEnvironment,
 	tunnelCommand,
@@ -91,4 +93,24 @@ test("authFailureHint: maps the common failures onto a next step", () => {
 	assert.match(authFailureHint("request timed out after 600000ms"), /auth-url/);
 	assert.match(authFailureHint("the server accepted the sign-in but holds no usable credentials"), /run \/agy auth again/);
 	assert.match(authFailureHint("spawn ENOENT"), /\/agy doctor/);
+});
+
+test("authStepGuide: the tunnel route names the saved copy, so no command is needed to recover it", () => {
+	const lines = authStepGuide("tunnel", env()).join("\n");
+	assert.match(lines, /Lost the URL/);
+	assert.ok(lines.includes(AUTH_URL_FILE_HINT));
+	assert.match(AUTH_URL_FILE_HINT, /acp-auth-urls\.log$/);
+});
+
+test("authRecovery: hands back the URL and the tunnel command, no extra command to learn", () => {
+	const lines = authRecovery(env({ user: "ana", host: "buildbox" }), "https://accounts.google.com/o/oauth2/v2/auth?x=1", 41234).join("\n");
+	assert.match(lines, /https:\/\/accounts\.google\.com/);
+	assert.ok(lines.includes("ssh -N -L 41234:127.0.0.1:41234 ana@buildbox"));
+	assert.ok(lines.includes(AUTH_URL_FILE_HINT));
+});
+
+test("authRecovery: a URL without a loopback port still returns the link", () => {
+	const lines = authRecovery(env(), "https://example.invalid/auth", null).join("\n");
+	assert.match(lines, /example\.invalid/);
+	assert.doesNotMatch(lines, /ssh -N -L/);
 });

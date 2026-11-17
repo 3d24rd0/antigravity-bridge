@@ -14,9 +14,9 @@ import {
 	authChoice,
 	authFailureHint,
 	authModeLabel,
+	authRecovery,
 	authStepGuide,
 	detectAuthEnvironment,
-	tunnelCommand,
 	type AuthMode,
 } from "./acp/auth-guide.js";
 import type { UiSink } from "./session-ui.js";
@@ -337,7 +337,13 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						"info",
 					);
 				} else {
-					ui?.notify(`ACP sign-in failed (${r.error}).\n${authFailureHint(String(r.error))}`, "warning");
+					// Hand the URL back when the flow already produced one: the page may
+					// still be open and the notice is long gone.
+					const captured = ctx.authCapture?.file ? readLastUrl(ctx.authCapture.file) : null;
+					const recovery = captured
+						? `\n\n${authRecovery(authEnv, captured, parseAuthPort(captured)).join("\n")}`
+						: "";
+					say(`ACP sign-in failed (${r.error}).\n${authFailureHint(String(r.error))}${recovery}`, "warning");
 				}
 				return;
 			}
@@ -390,31 +396,6 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					].join("\n"),
 					"info",
 				);
-				return;
-			}
-			if (sub === "auth-url") {
-				const file = ctx.authCapture?.file;
-				const url = file ? readLastUrl(file) : null;
-				if (!url) {
-					ui?.notify(
-						"No sign-in URL has been captured yet. Run /agy auth first: Google's URL appears here as soon as the server produces it.",
-						"info",
-					);
-					return;
-				}
-				const port = parseAuthPort(url);
-				const parts = ["Google sign-in URL for the ACP engine (valid until the flow completes):", "", url];
-				if (port) {
-					parts.push(
-						"",
-						"On another machine? Forward the loopback port before the page redirects:",
-						"",
-						`  ${tunnelCommand(port, detectAuthEnvironment())}`,
-					);
-				}
-				const text = parts.join("\n");
-				if (ui && cmdCtx.hasUI) ui.notify(text, "info");
-				else process.stderr.write(`[antigravity] ${text}\n`);
 				return;
 			}
 			if (sub === "doctor") {
