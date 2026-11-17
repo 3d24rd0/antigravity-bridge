@@ -9,6 +9,7 @@ import {
 import { showSettingsMenu, type MenuRow } from "./settings-menu.js";
 
 import { agyArgumentCompletions, agyUsageLine } from "./agy-command-surface.js";
+import type { UiSink } from "./session-ui.js";
 import { AGY_EFFORT_ORDER, type AgyModelEntry } from "./models.js";
 import type { SessionStore } from "./sessions.js";
 import type { TurnDriver } from "./driver-types.js";
@@ -70,7 +71,7 @@ export interface AgyCommandCtx {
 	roster: SubagentRoster;
 	/** Wizard-pick follow-through (download now + chained sign-in); reused
 	 *  by /agy engine's no-args modal so both entry points behave alike. */
-	runAcpPickSetup: (cmdCtx: { ui: ExtensionUIContext }) => Promise<void>;
+	runAcpPickSetup: (sink: UiSink) => Promise<void>;
 	/** BROWSER-capture handles; null when unavailable (Windows, unwritable
 	 *  data dir). /agy auth passes them to the sign-in process. */
 	authCapture: { browserEnv: Record<string, string>; file: string } | null;
