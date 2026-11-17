@@ -12,8 +12,19 @@
 // command handler owns the dialogs and the actual sign-in.
 
 import os from "node:os";
+import path from "node:path";
 
 export type AuthMode = "browser" | "tunnel" | "api-key";
+
+/** Where the BROWSER wrapper records the sign-in URL: the durable copy, since
+ *  the notice is one-shot and the flow blocks. */
+export const AUTH_URL_FILE_HINT = path.join(
+	os.homedir(),
+	".pi",
+	"agent",
+	"antigravity-bridge",
+	"acp-auth-urls.log",
+);
 
 export interface AuthEnvironment {
 	/** A desktop session can open a browser. */
@@ -105,6 +116,8 @@ export function authStepGuide(mode: AuthMode, env: AuthEnvironment): string[] {
 	lines.push("  3. Before the browser finishes, run the ssh tunnel command printed next to the URL.");
 	lines.push(`     (it forwards the loopback port back to ${env.host}; this command waits up to 10 minutes)`);
 	lines.push("  4. Come back here: the sign-in completes on its own when the redirect lands.");
+	lines.push("");
+	lines.push(`Lost the URL? It is also saved in ${AUTH_URL_FILE_HINT}`);
 	return lines;
 }
 
@@ -112,6 +125,16 @@ export function authStepGuide(mode: AuthMode, env: AuthEnvironment): string[] {
  *  real user and hostname instead of a placeholder. */
 export function tunnelCommand(port: number, env: AuthEnvironment): string {
 	return `ssh -N -L ${port}:127.0.0.1:${port} ${env.user}@${env.host}`;
+}
+
+/** Recovery block for a failure that already captured a URL: the page may
+ *  still be open, and the person needs the link plus the tunnel again without
+ *  hunting for a command. */
+export function authRecovery(env: AuthEnvironment, url: string, port: number | null): string[] {
+	const lines = ["Sign-in URL (reopen it with the tunnel up, then finish the page):", "", url];
+	if (port) lines.push("", `  ${tunnelCommand(port, env)}`);
+	lines.push("", `Also saved in ${AUTH_URL_FILE_HINT}`);
+	return lines;
 }
 
 /** Turn a sign-in failure into something the user can act on. */
