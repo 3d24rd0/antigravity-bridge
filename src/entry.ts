@@ -70,7 +70,8 @@ import { AcpDriver } from "./acp/driver.js";
 import { runAcpAuth } from "./acp/auth.js";
 import { setAuthInvalidatedHook } from "./acp/connection.js";
 import { setupAuthUrlCapture } from "./acp/browser-capture.js";
-import { clearAcpAuthVerified, ensureAcpReady, inspectAcpSetup } from "./acp/setup.js";
+import { clearAcpAuthVerified, ensureAcpReady, inspectAcpSetup, resolveInstalledBinary } from "./acp/setup.js";
+import { checkAcpUpdate } from "./acp/update.js";
 import type { TurnDriver, TurnOutcome } from "./driver-types.js";
 import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "./config.js";
 import { agyMissingMessage, isAgyInstalled } from "./engine-picker.js";
@@ -227,6 +228,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// ACP self-heal runs once per process (session_start re-fires on /reload;
 	// a ready setup is two file stats, so re-running is harmless anyway).
 	let acpSelfHealRan = false;
+	// One registry check per process, only for users who already run ACP: the
+	// notice is worth a line, never a background download.
+	let acpUpdateNoticeChecked = false;
 	// Warn-once-per-process flags for the missing-agy-CLI toast and the
 	// too-old-agy version gate (both stream-json).
 	let agyMissingWarned = false;
@@ -773,6 +777,27 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				if (!ui.notify(msg, "warning")) console.error(`[antigravity-bridge] ${msg}`);
 			})
 			.catch((err: unknown) => fileLog.log("acp-self-heal-failed", { error: String(err) }, "warn"));
+		}
+		// Newer ACP build? One cached registry fetch, one line, and the update
+		// itself stays a command the user runs. Offline or registry down is
+		// silence, not a warning.
+		if (!acpUpdateNoticeChecked) {
+			acpUpdateNoticeChecked = true;
+			const pin = loadConfig().acp.bin;
+			const installed = pin || resolveInstalledBinary().bin || null;
+			if (installed) {
+				void checkAcpUpdate(installed)
+					.then((check) => {
+						if (!check.updateAvailable) return;
+						ui.notify(
+							`ACP server update available: ${check.current} -> ${check.latest}. Run /agy acp-update; the current build keeps working.`,
+							"info",
+						);
+					})
+					.catch(() => {
+						/* never nag: this is a courtesy check */
+					});
+			}
 		}
 		// Bridge failure logger. Routine lifecycle (listening,
 		// bridge-config-written/removed, closed) is normal startup/teardown

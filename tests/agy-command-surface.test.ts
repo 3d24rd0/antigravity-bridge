@@ -86,3 +86,10 @@ test("the retired engine subcommand is gone, not just unadvertised", () => {
 	assert.equal(AGY_SUBCOMMANDS.some((sub) => sub.name === "engine"), false);
 	assert.deepEqual(agyArgumentCompletions("en"), []);
 });
+
+test("acp-update is advertised and completes", () => {
+	const sub = AGY_SUBCOMMANDS.find((s) => s.name === "acp-update");
+	assert.ok(sub);
+	assert.ok(agyArgumentCompletions("acp-").some((item) => item.value === "acp-update"));
+	assert.ok(agyArgumentCompletions("acp-").some((item) => item.value === "acp-bin"));
+});
