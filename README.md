@@ -107,7 +107,7 @@ and **Tab completes them**:
 /agy  doctor  auth  auth-manual  quota  clear  patch-cleanup
       mode  readonly  permissions  timeout  ask  stop  web  bridge  tools
       digest  system-prompt  model  thinking  agent
-      tasks  artifacts  subagents  engine  acp-bin
+      tasks  artifacts  subagents  acp-bin  acp-update
 ```
 
 ```bash
