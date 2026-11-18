@@ -144,6 +144,13 @@ Full reference, every flag and every environment variable:
 - **Read-only is enforced, never promised.** Plan mode cannot be enforced
   upstream, so the bridge refuses provider turns instead of faking it. Use
   `/agy readonly on`, Pi's tool restrictions, or the gate.
+- **Your credentials are never read.** Auth checks ask whether
+  `acp_token.json` exists (`stat`, never opened) and whether `GEMINI_API_KEY` is
+  set (a boolean, never the value). When an `agy` update rewrites `auth.type` to
+  a method this machine cannot satisfy, the bridge restores `oauth-personal` in
+  `~/.gemini/antigravity-acp/settings.json` — merging, so other keys survive —
+  and says what it did. No credential file is opened, and nothing leaves the
+  machine.
 
 Details and threat model: [docs/how-it-works.md#safety](docs/how-it-works.md#safety).
 
