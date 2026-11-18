@@ -14,7 +14,10 @@
   <a href="https://www.npmjs.com/package/@3d24rd0/pi-antigravity-bridge"><img src="https://img.shields.io/npm/v/@3d24rd0/pi-antigravity-bridge?labelColor=1A1218&color=F095C8&style=for-the-badge" alt="npm"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1A1218?labelColor=1A1218&color=D7A0B8&style=for-the-badge" alt="MIT"></a>
   <a href="https://pi.dev/packages/@3d24rd0/pi-antigravity-bridge"><img src="https://img.shields.io/badge/Pi-native-F095C8?labelColor=1A1218&style=for-the-badge" alt="Pi-native package"></a>
-  <a href="https://github.com/Gentleman-Programming/gentle-shell"><img src="https://img.shields.io/badge/built%20with-Gentle%20Shell-D7A0B8?labelColor=1A1218&style=for-the-badge" alt="Built with Gentle Shell"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Gentleman-Programming/gentle-ai"><img src="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png" height="64" alt="Built with Gentle-AI"></a>
 </p>
 
 ---
