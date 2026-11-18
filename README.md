@@ -6,14 +6,15 @@
 
 <p align="center">
   <b>Google Antigravity as a Pi model provider.</b><br>
-  Gemini 4 Argon, Gemini 3.8 Flash, Claude Sonnet 5.5 and Claude Opus 5.5 on the
-  subscription you already pay for.
+  Gemini 4 Argon, Gemini 4 Hydrogen, Gemini 3.8 Flash, Claude Sonnet 5.5 and
+  Claude Opus 5.5 on the subscription you already pay for.
 </p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@3d24rd0/pi-antigravity-bridge"><img src="https://img.shields.io/npm/v/@3d24rd0/pi-antigravity-bridge?labelColor=1A1218&color=F095C8&style=for-the-badge" alt="npm"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1A1218?labelColor=1A1218&color=D7A0B8&style=for-the-badge" alt="MIT"></a>
   <a href="https://pi.dev/packages/@3d24rd0/pi-antigravity-bridge"><img src="https://img.shields.io/badge/Pi-native-F095C8?labelColor=1A1218&style=for-the-badge" alt="Pi-native package"></a>
+  <a href="https://github.com/Gentleman-Programming/gentle-shell"><img src="https://img.shields.io/badge/built%20with-Gentle%20Shell-D7A0B8?labelColor=1A1218&style=for-the-badge" alt="Built with Gentle Shell"></a>
 </p>
 
 ---
@@ -77,6 +78,7 @@ the engine; Pi's thinking toggle picks the reasoning level.
 | Model | Engine | Input | Best for |
 |---|---|---|---|
 | `antigravity/gemini-4-argon-acp` | ACP | text + image | Deep reasoning, native diff cards |
+| `antigravity/gemini-4-hydrogen-acp` | ACP | text + image | Longest-horizon reasoning; the only model reaching `xhigh` |
 | `antigravity/gemini-3-8-flash-acp` | ACP | text + image | Low latency, light quota use |
 | `antigravity/gemini-4-argon-cli` | CLI | text + image | Same model, stream-json engine |
 | `antigravity/gemini-3-8-flash-cli` | CLI | text + image | Fast execution |
