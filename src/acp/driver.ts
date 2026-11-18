@@ -22,6 +22,7 @@
 //     approvals.mode allow to the same synchronous auto path
 
 import { randomUUID } from "node:crypto";
+import { launchConfigFor } from "./setup.js";
 import type { UsageEstimate } from "../config.js";
 import { SystemMessageSanitizer } from "../stream-sanitizer.js";
 import type { AgyPlanTier } from "./tier.js";
@@ -520,10 +521,15 @@ export class AcpDriver implements TurnDriver {
 		this.#generation += 1;
 		this.#state = "starting";
 		this.#stats.spawns += 1;
+		const bin = resolveAcpBinary(typeof this.#opts.bin === "function" ? this.#opts.bin() : this.#opts.bin);
+		// Launch the way the registry declares for this build (Google ships
+		// `--uid=` on Linux); an explicit override wins, and a build with no
+		// recorded definition launches bare rather than with another's flags.
+		const launch = launchConfigFor(bin);
 		const conn = new AcpConnection({
-			bin: resolveAcpBinary(typeof this.#opts.bin === "function" ? this.#opts.bin() : this.#opts.bin),
-			binArgs: this.#opts.binArgs,
-			extraEnv: this.#opts.extraEnv,
+			bin,
+			binArgs: this.#opts.binArgs ?? launch.args,
+			extraEnv: { ...launch.env, ...this.#opts.extraEnv },
 			authUrlFile: this.#opts.authUrlFile,
 			cwd: request.cwd,
 			mcpServers: this.#opts.mcpServers,
@@ -543,7 +549,10 @@ export class AcpDriver implements TurnDriver {
 			onExit: (info) => this.#onConnectionExit(conn, info),
 		});
 		this.#conn = conn;
-		this.#log("spawn", { bin: resolveAcpBinary(typeof this.#opts.bin === "function" ? this.#opts.bin() : this.#opts.bin) });
+		this.#log("spawn", {
+			bin,
+			args: this.#opts.binArgs ?? launch.args,
+		});
 		return conn
 			.start()
 			.then(() => {
