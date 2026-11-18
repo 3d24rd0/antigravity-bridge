@@ -169,6 +169,7 @@ Tab completes the surface: subcommands first, then their closed value sets.
 
 | Command | Effect |
 |---|---|
+| `/agy acp-update` | Check the registry for a newer ACP server build and install it: the new build is started once before it becomes `current`, the old one stays for rollback, and a user-supplied `acp.bin` is never rewritten. A startup notice says when one is available; nothing downloads on its own |
 | `/agy doctor` | Bridge state, driver counters, CLI and server versions, signed-in plan (ACP), paths, effective config |
 | `/agy quota` | Remaining subscription quota, per model group |
 | `/agy tasks [tail <id>]` | Background-task logs of this conversation (watch-only) |

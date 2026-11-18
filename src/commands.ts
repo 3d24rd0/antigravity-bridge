@@ -44,13 +44,18 @@ import { isValidAgyAgentName, listAgyAgents } from "./agents.js";
 import { formatSubagentRoster, type SubagentRoster } from "./subagent-roster.js";
 import { fetchAgyQuota, formatAgyQuotaReport } from "./usage.js";
 import { planSummary } from "./acp/tier.js";
+import { checkAcpUpdate, isManagedBinary, updateAcp } from "./acp/update.js";
 import { artifactOpenCommand, listAgyArtifacts } from "./artifacts.js";
 import { showArtifactsBrowser } from "./artifacts-ui.js";
 import { listAgyTasks, tailAgyTaskLog } from "./tasks.js";
 import { showTasksBrowser } from "./tasks-ui.js";
 import { agyConversationDir, resolveAgyBinary } from "./agy-paths.js";
 import type { DailyLogger } from "./daily-log.js";
-import { ensureAcpReady, inspectAcpSetup } from "./acp/setup.js";
+import {
+	ensureAcpReady,
+	inspectAcpSetup,
+	resolveInstalledBinary,
+} from "./acp/setup.js";
 import { runAcpAuth } from "./acp/auth.js";
 import { patchStatus, restorePatch } from "./patch-cleanup.js";
 import { withDialogLock } from "./dialog-lock.js";
@@ -412,6 +417,50 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						"3. /agy doctor shows the server version when auth is OK.",
 					].join("\n"),
 					"info",
+				);
+				return;
+			}
+			if (sub === "acp-update") {
+				const say = (message: string, level: "info" | "warning" = "info"): void => {
+					if (ui && cmdCtx.hasUI) ui.notify(message, level);
+					else process.stderr.write(`[antigravity] ${message}\n`);
+				};
+				const config = loadConfig();
+				const currentBin = config.acp.bin || resolveInstalledBinary().bin || null;
+				let check: Awaited<ReturnType<typeof checkAcpUpdate>>;
+				try {
+					check = await checkAcpUpdate(currentBin, { force: true });
+				} catch (err) {
+					say(`Could not reach the ACP registry (${String(err)}). Nothing changed.`, "warning");
+					return;
+				}
+				if (!check.updateAvailable) {
+					say(
+						check.current
+							? `ACP server is up to date (build ${check.latest}).`
+							: `No ACP server installed yet. /agy auth downloads build ${check.latest}.`,
+					);
+					return;
+				}
+				say(`Updating the ACP server: ${check.current} -> ${check.latest}. The new build is started once before it becomes current; the old one stays for rollback.`);
+				const res = await updateAcp({
+					currentBin,
+					force: true,
+					onProgress: (m) => say(m),
+				});
+				if (!res.ok) {
+					say(
+						`ACP update failed (${res.error}).${res.validationFailed ? ` ${check.current} is still current.` : ""}`,
+						"warning",
+					);
+					return;
+				}
+				// Adopt the new build only when the pin is ours (inside the managed
+				// root) or unset. A user-supplied path is never rewritten.
+				const adopt = res.bin !== undefined && (!config.acp.bin || isManagedBinary(config.acp.bin));
+				if (adopt && res.bin) saveConfig({ acp: { ...config.acp, bin: res.bin } });
+				say(
+					`ACP server updated ${res.from} -> ${res.to}.${adopt ? "" : ` Your custom acp.bin was left alone; /agy acp-bin auto adopts the new build.`} /reload applies it to new turns.`,
 				);
 				return;
 			}

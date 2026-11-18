@@ -44,6 +44,11 @@ export interface SetupOptions {
 	unpack?: (archive: string, dest: string) => Promise<void>;
 	/** Download when the binary is missing. Default true. */
 	install?: boolean;
+	/** Re-point `current` after unpacking. Default true; an updater validates
+	 *  the new build first and switches only on success. */
+	switchCurrent?: boolean;
+	/** Registry platform key override (tests stay on one platform). */
+	platform?: string;
 }
 
 export type AcpSetupStatus =
@@ -95,7 +100,7 @@ export function buildIdFromArchive(url: string): string {
 	return m[1];
 }
 
-function defaultInstallRoot(): string {
+export function defaultInstallRoot(): string {
 	return path.join(os.homedir(), ".local", "opt", "agy-acp");
 }
 
@@ -117,12 +122,12 @@ export function executableFile(p: string): boolean {
 	}
 }
 
-interface RegistryBinary {
+export interface RegistryBinary {
 	archive: string;
 	cmd?: string;
 }
 
-async function fetchRegistryBinary(opts: SetupOptions, key: string): Promise<RegistryBinary> {
+export async function fetchRegistryBinary(opts: SetupOptions, key: string): Promise<RegistryBinary> {
 	const fetchImpl = opts.fetchImpl ?? fetch;
 	const res = await fetchImpl(opts.registryUrl ?? REGISTRY_URL, { signal: AbortSignal.timeout(15_000) });
 	if (!res.ok) throw new Error(`registry fetch failed: HTTP ${res.status}`);
@@ -187,7 +192,7 @@ export interface InstallResult {
  *  sha256 is recorded at install time for drift detection. */
 export async function installAcpBinary(opts: SetupOptions = {}): Promise<InstallResult> {
 	const root = opts.installRoot ?? defaultInstallRoot();
-	const entry = await fetchRegistryBinary(opts, platformKey());
+	const entry = await fetchRegistryBinary(opts, opts.platform ?? platformKey());
 	const build = buildIdFromArchive(entry.archive);
 	const cmd = (entry.cmd ?? "./agy_acp_server.par").replace(/^\.\//, "");
 	const dir = path.join(root, build);
@@ -209,12 +214,19 @@ export async function installAcpBinary(opts: SetupOptions = {}): Promise<Install
 	fs.chmodSync(bin, 0o755);
 	fs.writeFileSync(path.join(dir, "zip.sha256"), `${sha}  ${path.basename(entry.archive)}\n`);
 
-	// Re-point `current` at the new build. The link is ours (managed layout).
+	if (opts.switchCurrent !== false) {
+		pointCurrent(root, build);
+		opts.onProgress?.("ACP server installed.");
+	}
+	return { bin, build, sha256: sha, downloaded: true };
+}
+
+/** Re-point `<root>/current` at `build`. The link is ours (managed layout);
+ *  the updater defers it so a build that fails to start never becomes current. */
+export function pointCurrent(root: string, build: string): void {
 	const link = path.join(root, "current");
 	fs.rmSync(link, { force: true });
 	fs.symlinkSync(build, link);
-	opts.onProgress?.("ACP server installed.");
-	return { bin, build, sha256: sha, downloaded: true };
 }
 
 function readRecordedSha(dir: string): string {

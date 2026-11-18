@@ -30,6 +30,7 @@ export const AGY_SUBCOMMANDS: readonly AgySubcommand[] = [
 	{ name: "auth", description: "prepare the ACP server and sign in", usage: "auth" },
 	{ name: "auth-manual", description: "print the manual sign-in steps", usage: "auth-manual" },
 	{ name: "acp-bin", description: "ACP server binary path", usage: "acp-bin <path|auto>", values: ["auto"] },
+	{ name: "acp-update", description: "install a newer ACP server build", usage: "acp-update" },
 	{
 		name: "mode",
 		description: "execution mode (plan refuses provider turns)",
