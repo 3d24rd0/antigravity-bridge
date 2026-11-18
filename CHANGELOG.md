@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.4.1]
 
 ### Fixed
 
@@ -11,6 +11,10 @@
 
 - **`/agy doctor` reports the auth check**, not just the declared type: one line naming the method, whether a Google login exists and whether `GEMINI_API_KEY` is set, so a rewrite is visible before the first failed turn.
 - **`/agy acp-update` and startup warn when the declared auth method cannot work**, where the user is already reading about the update, instead of leaving it to a failed turn.
+
+### Changed
+
+- **The README states the auth guarantee, so nobody has to read the source to trust it.** One line in *Safety, up front*: the login check `stat`s `acp_token.json` without opening it, `GEMINI_API_KEY` is read as a boolean and never as a value, and the repair merges `settings.json` so keys it did not write survive.
 
 ## [1.4.0]
 
