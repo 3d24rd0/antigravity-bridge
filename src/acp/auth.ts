@@ -1,6 +1,6 @@
 import { AcpConnection } from "./connection.js";
 import { resolveAuthMethod, type AgyAuthMethod } from "./auth-methods.js";
-import { hasAcpToken, launchConfigFor, writeAcpAuthVerified } from "./setup.js";
+import { hasAcpToken, launchConfigFor, writeAcpAuthVerified, writeAuthType } from "./setup.js";
 
 // Explicit sign-in (/agy auth): spawn a short-lived server, send
 // `authenticate` (the RPC that fires the loopback listener + browser OAuth
@@ -61,6 +61,11 @@ export interface AcpAuthResult {
 	error?: string;
 	/** The caller cancelled at the method picker: not a failure to report. */
 	cancelled?: boolean;
+	/** Sign-in method actually used (the picker's choice or the default). */
+	methodId?: string;
+	/** True when that method was written into settings.json, so the next spawn
+	 *  reads it instead of whatever the server's own update left there. */
+	persisted?: boolean;
 }
 
 /** Live credential probe for the token-absent branch: a server with usable
@@ -78,6 +83,31 @@ async function probeUsableCredentials(conn: AcpConnection, cwd?: string): Promis
 }
 
 let authInFlight: Promise<AcpAuthResult> | null = null;
+
+/** Methods this bridge knows how to declare in settings.json. Only these are
+ *  written: a method whose server-side shape has never been observed
+ *  (oauth-business, agent-platform) is named in the result but never invented
+ *  into a file the server may reject. */
+const PERSISTABLE_METHODS = new Set(["oauth-personal", "gemini-api-key"]);
+
+/** Record the method a completed sign-in used, so a server restart, or a
+ *  rewrite of settings.json by the server's own update, cannot silently
+ *  invalidate a login that worked. Never throws: a failed write only means the
+ *  choice was not made durable, which the caller reports as `persisted: false`. */
+function persistAuthMethod(
+	methodId: string,
+	tokenDir: string | undefined,
+	log?: (msg: string, data?: unknown) => void,
+): boolean {
+	if (!PERSISTABLE_METHODS.has(methodId)) return false;
+	try {
+		writeAuthType(methodId as "oauth-personal" | "gemini-api-key", tokenDir);
+		return true;
+	} catch (err) {
+		log?.("auth-method-persist-failed", { methodId, error: err instanceof Error ? err.message : String(err) });
+		return false;
+	}
+}
 
 export function runAcpAuth(opts: AcpAuthOptions): Promise<AcpAuthResult> {
 	// Same launch definition the turns use: the sign-in must exercise the build
@@ -127,10 +157,16 @@ export function runAcpAuth(opts: AcpAuthOptions): Promise<AcpAuthResult> {
 					};
 				}
 				writeAcpAuthVerified(opts.authVerifiedFile);
-				return { ok: true, note: "the server authenticated from existing credentials; no browser sign-in was needed" };
+				const persisted = persistAuthMethod(methodId, opts.tokenDir, opts.log);
+				return {
+					ok: true,
+					note: "the server authenticated from existing credentials; no browser sign-in was needed",
+					methodId,
+					persisted,
+				};
 			}
 			writeAcpAuthVerified(opts.authVerifiedFile);
-			return { ok: true };
+			return { ok: true, methodId, persisted: persistAuthMethod(methodId, opts.tokenDir, opts.log) };
 		} catch (err) {
 			return { ok: false, error: err instanceof Error ? err.message : String(err) };
 		} finally {

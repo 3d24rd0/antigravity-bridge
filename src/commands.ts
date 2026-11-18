@@ -52,8 +52,10 @@ import { showTasksBrowser } from "./tasks-ui.js";
 import { agyConversationDir, resolveAgyBinary } from "./agy-paths.js";
 import type { DailyLogger } from "./daily-log.js";
 import {
+	describeAuthDiagnosis,
 	ensureAcpReady,
 	inspectAcpSetup,
+	inspectAuthDrift,
 	launchConfigFor,
 	resolveInstalledBinary,
 } from "./acp/setup.js";
@@ -355,8 +357,10 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				ctx.fileLog.log("acp-auth", r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? "info" : "warn");
 				if (r.cancelled) return;
 				if (r.ok) {
+					const how = r.methodId ? ` via ${r.methodId}` : "";
+					const durable = r.persisted ? " (saved to settings.json)" : "";
 					ui?.notify(
-						r.note ? `Signed in (${r.note}). The ACP engine is ready; takes effect on the next pi start (or /reload).` : "Signed in. The ACP engine is ready; takes effect on the next pi start (or /reload).",
+						`Signed in${how}${durable}${r.note ? ` (${r.note})` : ""}. The ACP engine is ready; takes effect on the next pi start (or /reload).`,
 						"info",
 					);
 				} else {
@@ -463,6 +467,17 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				say(
 					`ACP server updated ${res.from} -> ${res.to}.${adopt ? "" : ` Your custom acp.bin was left alone; /agy acp-bin auto adopts the new build.`} /reload applies it to new turns.`,
 				);
+				// A build can arrive with a settings.json shape this machine cannot
+				// satisfy. Say it here, where the user is already reading about the
+				// update, instead of letting the next turn fail with the server's own
+				// credential message.
+				const drift = inspectAuthDrift();
+				if (drift.broken) {
+					say(
+						`ACP auth settings ask for ${drift.declared} without its credential. ${describeAuthDiagnosis(drift)}${drift.repairable ? " The next ACP start restores it automatically." : ""}`,
+						"warning",
+					);
+				}
 				return;
 			}
 			if (sub === "doctor") {
@@ -518,6 +533,9 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						? [`  acp args:      ${launchConfigFor(setup.bin).args.join(" ")}`]
 						: []),
 						`  acp auth:      ${setup.auth ?? "not configured (auto-setup bootstraps)"}`,
+						// The declared method and the credential actually available, so a
+						// server-side rewrite is visible here instead of only as a failed turn.
+						`  acp auth check: ${describeAuthDiagnosis(inspectAuthDrift())}`,
 					);
 				}
 				// The config surface lives here too, so doctor is the ONE status

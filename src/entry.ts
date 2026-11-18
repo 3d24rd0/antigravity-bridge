@@ -767,6 +767,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					if (status.binarySource === "installed" || status.binarySource === "existing") {
 						saveConfig({ acp: { ...loadConfig().acp, bin: status.bin } });
 					}
+					// setup repairs a settings.json that the server's own update rewrote
+					// to a credential method this machine cannot satisfy. Say it once,
+					// here, where the cause is visible, instead of letting the first turn
+					// fail with the server's API-key message.
+					if (status.actions.some((a) => a.includes("restored oauth-personal"))) {
+						const msg =
+							"ACP auth settings had been rewritten to ask for an API key that is not set; your Google login was restored. /agy doctor shows the current state.";
+						if (!ui.notify(msg, "warning")) console.error(`[antigravity-bridge] ${msg}`);
+					}
 					if (status.needsLogin) {
 						const msg = acpLoginPending();
 						if (!ui.notify(msg, "warning")) console.error(`[antigravity-bridge] ${msg}`);

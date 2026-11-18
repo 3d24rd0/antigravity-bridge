@@ -412,6 +412,68 @@ export function writeAuthType(type: "gemini-api-key" | "oauth-personal", dir?: s
 	fs.writeFileSync(file, `${JSON.stringify({ ...settings, auth: { ...prevAuth, type } }, null, 2)}\n`, { mode: 0o600 });
 }
 
+/** What the declared auth method needs, against what this machine can give it.
+ *  Pure: one verdict shared by setup, doctor, the update notice and startup. */
+export interface AuthDiagnosis {
+	/** auth.type as declared ("token" when only the login file exists). */
+	declared: string | undefined;
+	/** A Google login token sits next to settings.json. */
+	token: boolean;
+	/** GEMINI_API_KEY is set in the environment the server inherits. */
+	apiKey: boolean;
+	/** The declared method cannot authenticate as configured. */
+	broken: boolean;
+	/** Broken, but a present login makes oauth-personal a safe repair. */
+	repairable: boolean;
+}
+
+/** Compare a declared auth type with the credentials actually available.
+ *  settings.json is the server's file and an update of its binary can rewrite
+ *  it (observed: a working oauth-personal login replaced by gemini-api-key),
+ *  so a declared credential method without its credential is a state this
+ *  bridge must recognise instead of spawning a server that fails session/new. */
+export function diagnoseAuth(
+	auth: AuthState,
+	available: { token: boolean; apiKey: boolean },
+): AuthDiagnosis {
+	const declared = auth.configured ? auth.type : undefined;
+	const broken = declared === "gemini-api-key" && !available.apiKey;
+	return {
+		declared,
+		token: available.token,
+		apiKey: available.apiKey,
+		broken,
+		repairable: broken && available.token,
+	};
+}
+
+/** One line naming the state and the remedy. Never prints a credential value:
+ *  it only reports which of them exists. */
+export function describeAuthDiagnosis(d: AuthDiagnosis): string {
+	if (d.declared === undefined) return "not configured";
+	if (!d.broken) {
+		if (d.declared === "gemini-api-key") return `${d.declared} (GEMINI_API_KEY set)`;
+		return d.token ? `${d.declared} (signed in)` : `${d.declared} (no sign-in yet; /agy auth)`;
+	}
+	if (d.repairable) {
+		return `${d.declared} without GEMINI_API_KEY; a Google login is present, so setup restores oauth-personal`;
+	}
+	return `${d.declared} without GEMINI_API_KEY and no Google login: set GEMINI_API_KEY, or put {"auth":{"type":"oauth-personal"}} in settings.json and run /agy auth`;
+}
+
+/** The diagnosis for the settings dir the server actually reads (default or
+ *  explicit), from the same sources setup reads. Never opens a credential. */
+export function inspectAuthDrift(
+	opts: { geminiDir?: string; env?: NodeJS.ProcessEnv } = {},
+): AuthDiagnosis {
+	const dir = opts.geminiDir ?? path.join(os.homedir(), ".gemini", "antigravity-acp");
+	const env = opts.env ?? process.env;
+	return diagnoseAuth(readAuthState(dir), {
+		token: tokenPresent(dir),
+		apiKey: Boolean(env.GEMINI_API_KEY?.trim()),
+	});
+}
+
 export interface BinaryResolution {
 	bin: string | null;
 	source: "env" | "config" | "existing" | "installed" | null;
@@ -505,6 +567,41 @@ export async function ensureAcpReady(opts: SetupOptions = {}): Promise<AcpSetupS
 	// legacy ~/.gemini credentials; marker written by runAcpAuth, cleared on
 	// any -32000). gemini-api-key has no browser login; a present token file
 	// means done.
+	const env = opts.env ?? process.env;
+	const diagnosis = diagnoseAuth(auth, {
+		token: tokenPresent(gdir),
+		apiKey: Boolean(env.GEMINI_API_KEY?.trim()),
+	});
+	// The server reads settings.json at startup, and its own binary can rewrite
+	// that file on update (observed in the field: a working oauth-personal login
+	// replaced by gemini-api-key, which then demands an env var nobody set).
+	// Declared-but-unsatisfiable is therefore NOT "ready": repair it when the
+	// login that used to work is still on disk, and name both routes when there
+	// is nothing to repair with.
+	if (diagnosis.repairable) {
+		try {
+			writeAuthType("oauth-personal", gdir);
+			actions.push(
+				"settings.json asked for gemini-api-key with no GEMINI_API_KEY; restored oauth-personal (the Google login was intact)",
+			);
+			opts.onProgress?.("ACP settings asked for an API key that is not set; restored your Google login instead.");
+			// A present token is a completed login: never ask for it twice.
+			return { ok: true, bin: binary.bin!, binarySource: binary.source!, auth: "oauth-personal", needsLogin: false, actions };
+		} catch (err) {
+			return {
+				ok: false,
+				stage: "auth",
+				error: err instanceof Error ? err.message : String(err),
+				manual: MANUAL_SETUP,
+			};
+		}
+	}
+	if (diagnosis.broken) {
+		// The server's own wording ("set GEMINI_API_KEY in the environment the ACP
+		// server is launched from") describes a setup this machine does not have;
+		// name the state and the two ways out instead of relaying it.
+		return { ok: false, stage: "auth", error: describeAuthDiagnosis(diagnosis), manual: MANUAL_SETUP };
+	}
 	const needsLogin = auth.type !== "gemini-api-key" && !tokenPresent(gdir) && !readAcpAuthVerified(opts.authVerifiedFile);
 	return {
 		ok: true,

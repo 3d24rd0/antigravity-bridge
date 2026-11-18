@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, test } from "vitest";
 import { runAcpAuth } from "../src/acp/auth.js";
-import { readAcpAuthVerified } from "../src/acp/setup.js";
+import { readAcpAuthVerified, readAuthState, writeAuthType } from "../src/acp/setup.js";
 
 const FAKE_SERVER = fileURLToPath(new URL("./helpers/fake-acp-server.mjs", import.meta.url));
 
@@ -38,6 +38,38 @@ function seedToken(dir: string): void {
 	fs.mkdirSync(tokenDir, { recursive: true });
 	fs.writeFileSync(path.join(tokenDir, "acp_token.json"), "{}");
 }
+
+describe("acp/auth persists the sign-in method", () => {
+	// The server's own update can rewrite settings.json to a method this machine
+	// cannot satisfy. A sign-in the user completes must therefore survive as the
+	// declared method, or the next spawn reads the rewritten file again.
+	test("a completed sign-in rewrites a drifted settings.json back to the method used", async () => {
+		const dir = tmpDir();
+		seedToken(dir);
+		const tokenDir = path.join(dir, "token-fixture");
+		writeAuthType("gemini-api-key", tokenDir);
+
+		const r = await runAcpAuth({ ...authOpts(dir), methodId: "oauth-personal" });
+		assert.equal(r.ok, true);
+		assert.equal(r.methodId, "oauth-personal");
+		assert.equal(r.persisted, true);
+		assert.equal(readAuthState(tokenDir).type, "oauth-personal");
+	});
+
+	test("a method whose settings shape is unknown leaves the file alone", async () => {
+		const dir = tmpDir();
+		seedToken(dir);
+		const tokenDir = path.join(dir, "token-fixture");
+		writeAuthType("gemini-api-key", tokenDir);
+
+		const r = await runAcpAuth({ ...authOpts(dir), methodId: "oauth-business" });
+		assert.equal(r.ok, true);
+		assert.equal(r.methodId, "oauth-business");
+		// Never invent a value the server may reject.
+		assert.equal(r.persisted, false);
+		assert.equal(readAuthState(tokenDir).type, "gemini-api-key");
+	});
+});
 
 describe("acp/auth runAcpAuth", () => {
 	test("sends authenticate with the oauth-personal method and succeeds when the token is present", async () => {

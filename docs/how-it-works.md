@@ -161,7 +161,7 @@ Tab completes the surface: subcommands first, then their closed value sets.
 
 | Command | Effect |
 |---|---|
-| `/agy auth` | Prepare the ACP server and sign in. Asks the server which sign-in methods your account has and offers the browser ones (`oauth-personal`, `oauth-business` for Gemini Enterprise) with their own wording; credential methods (`gemini-api-key`, `agent-platform`) are named but not driven, since they need credentials and server settings this bridge does not manage. Detects the environment and explains what will happen, prints the exact `ssh -N -L` command for a terminal without a browser, and reprints the URL with the command if the sign-in fails. The URL is also saved in `~/.pi/agent/antigravity-bridge/acp-auth-urls.log` |
+| `/agy auth` | Prepare the ACP server and sign in. Asks the server which sign-in methods your account has and offers the browser ones (`oauth-personal`, `oauth-business` for Gemini Enterprise) with their own wording; credential methods (`gemini-api-key`, `agent-platform`) are named but not driven, since they need credentials and server settings this bridge does not manage. Detects the environment and explains what will happen, prints the exact `ssh -N -L` command for a terminal without a browser, and reprints the URL with the command if the sign-in fails. The method used is written into `settings.json`, so a completed sign-in survives a restart or a server update that rewrites that file. The URL is also saved in `~/.pi/agent/antigravity-bridge/acp-auth-urls.log` |
 | `/agy auth-manual` | Print the full manual sign-in reference |
 | `/agy acp-bin <path \| auto>` | Show or set the ACP server binary path |
 
@@ -286,6 +286,7 @@ Defaults, stated plainly:
 | "The `agy` CLI is missing" | Install it, put `agy` on `PATH`, or set `AGY_BIN` |
 | Confusing stream errors right after install | `agy` is too old; `/agy doctor` compares against the floor |
 | ACP setup fails or the download stalls | `/agy auth` retries; `/agy auth-manual` prints the manual steps |
+| ACP turns fail asking for `GEMINI_API_KEY` after a server update | The server's own `settings.json` now declares `gemini-api-key`. If you sign in with Google, setup restores `oauth-personal` on the next ACP start and says so; `/agy doctor` shows the declared method and which credential exists. Set `GEMINI_API_KEY` only if you actually use the metered API key |
 | No sign-in URL over SSH | The bridge prints the URL and the `ssh -N -L` forward command |
 | "MCP tool bridge disabled" | The server could not bind; `/agy doctor` shows the reason |
 | A tool call answers "STILL RUNNING" | It escalated to a poll handle; the result arrives via `bridge_poll_result` |
