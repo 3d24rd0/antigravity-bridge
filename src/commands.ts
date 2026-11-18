@@ -80,7 +80,7 @@ export interface AgyCommandCtx {
 	/** Live subagent roster (folded in the provider); /agy subagents. */
 	roster: SubagentRoster;
 	/** Wizard-pick follow-through (download now + chained sign-in); reused
-	 *  by /agy engine's no-args modal so both entry points behave alike. */
+	 *  by the settings menu modal so both entry points behave alike. */
 	runAcpPickSetup: (sink: UiSink) => Promise<void>;
 	/** BROWSER-capture handles; null when unavailable (Windows, unwritable
 	 *  data dir). /agy auth passes them to the sign-in process. */
@@ -177,13 +177,13 @@ function statusText(ctx: AgyCommandCtx): string {
 	const source = ctx.usingFallback ? "fallback (agy models failed)" : "discovered";
 	return [
 		"Antigravity bridge",
-		`  engine:        ${config.engine}${config.engine === "stream-json" ? " (agy CLI fallback)" : " (official server)"}`,
+		`  engine:        ${config.engine}${config.engine === "stream-json" ? " (default for ids without a suffix; agy CLI)" : " (default for ids without a suffix; official server)"}`,
 		`  models:        ${ctx.entries.length} ${source}`,
 		...settingsRows(ctx),
 		`  sessions:      ${ctx.store.size} bound`,
 		`  config:        ${CONFIG_PATH}`,
 		"",
-		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy stop [runId-prefix], /agy model <alias>, /agy thinking low|medium|high|xhigh, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy timeout <1-1440|off>, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear, /agy doctor",
+		"Subcommands: /agy auth, /agy auth-manual, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy stop [runId-prefix], /agy model <alias>, /agy thinking low|medium|high|xhigh, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy timeout <1-1440|off>, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear, /agy doctor",
 	].join("\n");
 }
 
@@ -269,18 +269,10 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				);
 				return;
 			}
-			if (sub === "engine") {
-				ui?.notify("Models now declare their engine directly in the model name (e.g. gemini-4-argon-acp vs gemini-4-argon-cli). Use /model to switch engines.", "info");
-				return;
-			}
 			if (sub === "auth") {
-				// Gate on the CONFIGURED engine (disk + env), not the latched one:
-				// /agy engine acp followed by /agy auth in the same session works,
-				// no restart needed before signing in.
-				if (loadConfig().engine !== "acp") {
-					ui?.notify(`the selected engine is ${loadConfig().engine}. /agy engine acp first, then /agy auth.`, "warning");
-					return;
-				}
+				// No engine gate: every registered model carries its engine in the
+				// id (-acp/-cli), so a user on the CLI default can still pick an
+				// ACP model, and signing in is what makes that work.
 				// Explain the route before the blocking sign-in, not after a failure:
 				// the environment decides the steps, and discovering them afterwards
 				// means running other commands to find out what is happening.
@@ -396,7 +388,7 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				ui?.notify(
 					[
 						"ACP engine authentication (one-time; usually automatic -",
-						"/agy engine acp and session start set this up for you):",
+						"session start sets this up for you):",
 						"",
 						"The server is Google's official Antigravity ACP, installed from Google's",
 						"own registry. Logging in uses your Antigravity subscription: the same",
@@ -714,7 +706,7 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				// ACP has no agent slot in the protocol (RC01): refuse instead of
 				// silently ignoring a configured agent.
 				if (ctx.engine === "acp") {
-					ui?.notify("the ACP engine has no agent selection (RC01). /agy engine stream-json first.", "warning");
+					ui?.notify("the ACP engine has no agent selection (RC01). Pick a -cli model in /model for agent runs.", "warning");
 					return;
 				}
 				const name = (args ?? "").trim().split(/\s+/).slice(1).join(" ").trim();
@@ -887,7 +879,7 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 /** Interactive settings picker (TUI only). Rows: the runtime config surface
  *  (mode, permissions, model, thinking, bridge, digest, system prompt) plus
  *  the engine row, which resolves the menu on Enter and opens the same
- *  picker modal as /agy engine (self-service binary + auth setup for acp). */
+ *  picker modal (self-service binary + auth setup for acp). */
 async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promise<void> {
 	const config = loadConfig();
 	const pending: PendingConfig = {};
