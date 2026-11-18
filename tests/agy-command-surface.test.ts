@@ -78,3 +78,11 @@ test("/agy thinking offers agy's tier vocabulary, without a tier no model has", 
 		["xhigh"],
 	);
 });
+
+test("the retired engine subcommand is gone, not just unadvertised", () => {
+	// It printed "engine is chosen by the model name" and changed nothing, while
+	// /agy auth told users to run it. A command that cannot do anything must not
+	// exist in the surface.
+	assert.equal(AGY_SUBCOMMANDS.some((sub) => sub.name === "engine"), false);
+	assert.deepEqual(agyArgumentCompletions("en"), []);
+});

@@ -34,7 +34,7 @@ export const ENGINE_PICKER_ITEMS: ChoiceRow[] = [
 /** Intro paragraph above the list. Text wraps, so explanations stay here and
  *  option descriptions stay one-liners (the choice list truncates long lines). */
 export const ENGINE_PICKER_INTRO = [
-	"Pick the engine that runs your Antigravity turns. Switch anytime with /agy engine (restart applies it).",
+	"Pick the default engine. Every model under /model carries its engine in the name (-acp or -cli), so this only applies to a model id without a suffix.",
 	"",
 	"ACP (default): Google's official server (agy_acp_server.par). Needs a second Google sign-in and a ~1.5 GB server binary downloaded from Google (automatic, one-time, unavoidable: the server is not part of the agy CLI).",
 	"stream-json (fallback): the `agy` CLI you already installed and authenticated. Persistent process, streamed output.",
