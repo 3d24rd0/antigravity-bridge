@@ -125,6 +125,36 @@ export function executableFile(p: string): boolean {
 export interface RegistryBinary {
 	archive: string;
 	cmd?: string;
+	/** Declared launch arguments for this platform/build (registry FORMAT.md:
+	 *  a `binary` distribution is "download, extract, run", and `args`/`env`
+	 *  are part of that definition). Google declares `--uid=` for Linux, which
+	 *  is what keeps the server from switching to a group Debian lacks. */
+	args?: string[];
+	/** Declared launch environment for this platform/build. */
+	env?: Record<string, string>;
+}
+
+/** Recorded launch definition for one installed build (`<build>/launch.json`). */
+export interface AcpLaunchConfig {
+	build: string;
+	args: string[];
+	env: Record<string, string>;
+}
+
+const LAUNCH_FILE = "launch.json";
+
+function stringArray(v: unknown): string[] {
+	return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+}
+
+function stringRecord(v: unknown): Record<string, string> {
+	const out: Record<string, string> = {};
+	if (v && typeof v === "object" && !Array.isArray(v)) {
+		for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+			if (typeof val === "string") out[k] = val;
+		}
+	}
+	return out;
 }
 
 export async function fetchRegistryBinary(opts: SetupOptions, key: string): Promise<RegistryBinary> {
@@ -184,6 +214,8 @@ export interface InstallResult {
 	build: string;
 	sha256: string;
 	downloaded: boolean;
+	/** Launch definition in force for this build. */
+	launch: AcpLaunchConfig;
 }
 
 /** Fetch the pinned registry build for this platform and install it under
@@ -198,7 +230,14 @@ export async function installAcpBinary(opts: SetupOptions = {}): Promise<Install
 	const dir = path.join(root, build);
 	const bin = path.join(dir, cmd);
 	if (executableFile(bin)) {
-		return { bin, build, sha256: readRecordedSha(dir), downloaded: false };
+		// Already installed. Record the declared launch definition when this build
+		// IS the one the registry describes (a legacy install has none), so an
+		// upgrade that reuses a directory still launches the way Google says.
+		const existing = readLaunchConfig(bin);
+		const launch =
+			existing ??
+			writeLaunchConfig(dir, build, stringArray(entry.args), stringRecord(entry.env));
+		return { bin, build, sha256: readRecordedSha(dir), downloaded: false, launch };
 	}
 
 	fs.mkdirSync(root, { recursive: true });
@@ -214,11 +253,57 @@ export async function installAcpBinary(opts: SetupOptions = {}): Promise<Install
 	fs.chmodSync(bin, 0o755);
 	fs.writeFileSync(path.join(dir, "zip.sha256"), `${sha}  ${path.basename(entry.archive)}\n`);
 
+	const launch = writeLaunchConfig(dir, build, stringArray(entry.args), stringRecord(entry.env));
 	if (opts.switchCurrent !== false) {
 		pointCurrent(root, build);
 		opts.onProgress?.("ACP server installed.");
 	}
-	return { bin, build, sha256: sha, downloaded: true };
+	return { bin, build, sha256: sha, downloaded: true, launch };
+}
+
+/** Read a build's recorded launch definition, or null when it has none. */
+export function readLaunchConfig(bin: string): AcpLaunchConfig | null {
+	let dir: string;
+	try {
+		dir = path.dirname(fs.realpathSync(bin));
+	} catch {
+		dir = path.dirname(bin);
+	}
+	try {
+		const raw = JSON.parse(fs.readFileSync(path.join(dir, LAUNCH_FILE), "utf8")) as unknown;
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+		const rec = raw as Record<string, unknown>;
+		return {
+			build: typeof rec.build === "string" ? rec.build : path.basename(dir),
+			args: stringArray(rec.args),
+			env: stringRecord(rec.env),
+		};
+	} catch {
+		return null;
+	}
+}
+
+/** Persist a build's launch definition. Best effort: an unwritable dir means the
+ *  build launches bare, exactly like a legacy install. */
+export function writeLaunchConfig(
+	dir: string,
+	build: string,
+	args: string[],
+	env: Record<string, string>,
+): AcpLaunchConfig {
+	const launch: AcpLaunchConfig = { build, args, env };
+	try {
+		fs.writeFileSync(path.join(dir, LAUNCH_FILE), JSON.stringify(launch, null, 2) + "\n");
+	} catch {
+		/* read-only install dir: run bare */
+	}
+	return launch;
+}
+
+/** Launch definition for a binary, for spawners. A build with no record (or an
+ *  unreadable one) launches bare, never with another build's flags. */
+export function launchConfigFor(bin: string): AcpLaunchConfig {
+	return readLaunchConfig(bin) ?? { build: "", args: [], env: {} };
 }
 
 /** Re-point `<root>/current` at `build`. The link is ours (managed layout);

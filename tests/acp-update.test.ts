@@ -13,6 +13,7 @@ import {
 	checkAcpUpdate,
 	isManagedBinary,
 	latestRegistryBuild,
+	probeServerBinary,
 	REGISTRY_CACHE_TTL_MS,
 	updateAcp,
 } from "../src/acp/update.js";
@@ -185,4 +186,21 @@ test("updateAcp: an unreachable registry is an error, not a crash", async () => 
 	});
 	assert.equal(res.ok, false);
 	assert.match(res.error ?? "", /registry/);
+});
+
+test("probeServerBinary: launches with the build's recorded args, not bare", async () => {
+	// The validator must launch the build the way turns will, or Linux would be
+	// validated bare and then abort on the `nobody` group at the first turn.
+	const dir = tmp("agy-upd-");
+	const buildDir = path.join(dir, "1.5.0");
+	fs.mkdirSync(buildDir, { recursive: true });
+	const argvFile = path.join(dir, "argv.txt");
+	const bin = path.join(buildDir, "agy_acp_server.par");
+	fs.writeFileSync(bin, `#!/bin/sh\nprintf '%s' "$*" > '${argvFile}'\nexit 1\n`, { mode: 0o755 });
+	fs.writeFileSync(
+		path.join(buildDir, "launch.json"),
+		JSON.stringify({ build: "1.5.0", args: ["--uid="], env: { AGY_PROBE_ENV: "1" } }),
+	);
+	assert.equal(await probeServerBinary(bin, dir), false, "no protocol answer, so validation fails");
+	assert.equal(fs.readFileSync(argvFile, "utf8").trim(), "--uid=", "the declared args reached the process");
 });

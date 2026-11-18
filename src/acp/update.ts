@@ -23,6 +23,7 @@ import {
 	defaultInstallRoot,
 	fetchRegistryBinary,
 	installAcpBinary,
+	launchConfigFor,
 	platformKey,
 	pointCurrent,
 	type InstallResult,
@@ -156,8 +157,11 @@ function currentBuildFromRoot(opts: RegistryQuery): string | null {
  *  this is safe to run before switching and it catches a broken download, a
  *  wrong architecture, and the Debian `nobody` group abort. */
 export async function probeServerBinary(bin: string, cwd = process.cwd()): Promise<boolean> {
+	const launch = launchConfigFor(bin);
 	const conn = new AcpConnection({
 		bin,
+		binArgs: launch.args,
+		extraEnv: Object.keys(launch.env).length > 0 ? launch.env : undefined,
 		cwd,
 		log: () => {},
 		onUpdate: () => {},

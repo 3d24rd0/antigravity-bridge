@@ -1,6 +1,6 @@
 import { AcpConnection } from "./connection.js";
 import { resolveAuthMethod, type AgyAuthMethod } from "./auth-methods.js";
-import { hasAcpToken, writeAcpAuthVerified } from "./setup.js";
+import { hasAcpToken, launchConfigFor, writeAcpAuthVerified } from "./setup.js";
 
 // Explicit sign-in (/agy auth): spawn a short-lived server, send
 // `authenticate` (the RPC that fires the loopback listener + browser OAuth
@@ -80,11 +80,15 @@ async function probeUsableCredentials(conn: AcpConnection, cwd?: string): Promis
 let authInFlight: Promise<AcpAuthResult> | null = null;
 
 export function runAcpAuth(opts: AcpAuthOptions): Promise<AcpAuthResult> {
+	// Same launch definition the turns use: the sign-in must exercise the build
+	// the way it will actually run, or Linux would validate a bare launch that
+	// aborts on the `nobody` group.
+	const launch = launchConfigFor(opts.bin);
 	const conn = new AcpConnection({
 		bin: opts.bin,
-		binArgs: opts.binArgs,
+		binArgs: opts.binArgs ?? launch.args,
 		cwd: opts.cwd ?? process.cwd(),
-		extraEnv: opts.extraEnv,
+		extraEnv: { ...launch.env, ...opts.extraEnv },
 		authUrlFile: opts.authUrlFile,
 		log: opts.log ?? (() => {}),
 		onUpdate: () => {},

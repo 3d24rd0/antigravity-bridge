@@ -10,7 +10,9 @@ import { describe, test } from "vitest";
 import {
 	buildIdFromArchive,
 	ensureAcpReady,
+	installAcpBinary,
 	inspectAcpSetup,
+	launchConfigFor,
 	MANUAL_SETUP,
 	platformKey,
 	readAuthState,
@@ -293,5 +295,83 @@ describe("acp/setup inspectAcpSetup", () => {
 		writeAcpAuthVerified(verifiedFile);
 		const state = inspectAcpSetup({ installRoot: tmpDir(), geminiDir: gdir, authVerifiedFile: verifiedFile, env: {} });
 		assert.equal(state.auth, "oauth-personal (verified, no token file)");
+	});
+});
+
+// The registry declares how each platform's binary is meant to be RUN:
+// FORMAT.md defines a `binary` distribution as "download, extract, run" with
+// optional `args` and `env`, and Google declares `--uid=` for Linux (the flag
+// that stops the server switching to a group Debian/Ubuntu does not have).
+describe("acp/setup launch definition", () => {
+	const withLaunch = (args: unknown, env?: unknown) => ({
+		id: "antigravity-acp",
+		distribution: {
+			binary: {
+				[platformKey()]: { archive: ARCHIVE, cmd: "./agy_acp_server.par", args, ...(env === undefined ? {} : { env }) },
+			},
+		},
+	});
+
+	test("install records the declared args and env for the build", async () => {
+		const root = tmpDir();
+		const res = await installAcpBinary({
+			installRoot: root,
+			fetchImpl: fakeFetch(withLaunch(["--uid=", "--profile"], { AGY_X: "1", IGNORED: 5 })),
+			unpack: fakeUnpack,
+		});
+		const launch = JSON.parse(fs.readFileSync(path.join(root, BUILD, "launch.json"), "utf8")) as {
+			build: string;
+			args: string[];
+			env: Record<string, string>;
+		};
+		assert.equal(launch.build, BUILD);
+		assert.deepEqual(launch.args, ["--uid=", "--profile"]);
+		assert.deepEqual(launch.env, { AGY_X: "1" }, "non-string env entries are dropped");
+		assert.deepEqual(res.launch.args, ["--uid=", "--profile"]);
+		assert.deepEqual(launchConfigFor(res.bin).args, ["--uid=", "--profile"]);
+	});
+
+	test("a registry entry with no args records none (macOS today)", async () => {
+		const root = tmpDir();
+		const res = await installAcpBinary({ installRoot: root, fetchImpl: fakeFetch(withLaunch(undefined)), unpack: fakeUnpack });
+		assert.deepEqual(res.launch.args, []);
+		assert.deepEqual(launchConfigFor(res.bin).env, {});
+	});
+
+	test("a legacy install with no record is retro-fitted only when the build matches", async () => {
+		const root = tmpDir();
+		// First install writes no record (simulating an old layout).
+		await installAcpBinary({ installRoot: root, fetchImpl: fakeFetch(withLaunch(undefined)), unpack: fakeUnpack });
+		fs.rmSync(path.join(root, BUILD, "launch.json"), { force: true });
+
+		const again = await installAcpBinary({
+			installRoot: root,
+			fetchImpl: fakeFetch(withLaunch(["--uid="])),
+			unpack: fakeUnpack,
+		});
+		assert.equal(again.downloaded, false, "already installed: no second download");
+		assert.deepEqual(launchConfigFor(again.bin).args, ["--uid="], "the declared args are recorded");
+	});
+
+	test("a record on disk is never overwritten by a different declaration", async () => {
+		const root = tmpDir();
+		await installAcpBinary({ installRoot: root, fetchImpl: fakeFetch(withLaunch(["--uid="])), unpack: fakeUnpack });
+		const again = await installAcpBinary({
+			installRoot: root,
+			fetchImpl: fakeFetch(withLaunch(["--other"])),
+			unpack: fakeUnpack,
+		});
+		assert.deepEqual(launchConfigFor(again.bin).args, ["--uid="], "recorded args describe THIS build");
+	});
+
+	test("launchConfigFor: no record or a corrupt one launches bare", () => {
+		const root = tmpDir();
+		const bin = path.join(root, "1.2.3", "agy_acp_server.par");
+		fs.mkdirSync(path.dirname(bin), { recursive: true });
+		fs.writeFileSync(bin, "");
+		assert.deepEqual(launchConfigFor(bin), { build: "", args: [], env: {} });
+
+		fs.writeFileSync(path.join(path.dirname(bin), "launch.json"), "{not json");
+		assert.deepEqual(launchConfigFor(bin), { build: "", args: [], env: {} });
 	});
 });

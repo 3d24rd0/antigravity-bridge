@@ -54,6 +54,7 @@ import type { DailyLogger } from "./daily-log.js";
 import {
 	ensureAcpReady,
 	inspectAcpSetup,
+	launchConfigFor,
 	resolveInstalledBinary,
 } from "./acp/setup.js";
 import { runAcpAuth } from "./acp/auth.js";
@@ -513,6 +514,9 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					const setup = inspectAcpSetup({ configBin: config.acp.bin });
 					lines.push(
 						`  acp binary:    ${setup.bin ?? "not found (auto-setup offers install)"}${setup.source ? ` (${setup.source})` : ""}`,
+					...(setup.bin && launchConfigFor(setup.bin).args.length > 0
+						? [`  acp args:      ${launchConfigFor(setup.bin).args.join(" ")}`]
+						: []),
 						`  acp auth:      ${setup.auth ?? "not configured (auto-setup bootstraps)"}`,
 					);
 				}
