@@ -15,9 +15,11 @@ import { test } from "vitest";
 import {
 	fetchAgyQuota,
 	formatAgyQuotaReport,
+	getOrFetchAgyQuota,
 	parseAgyUsageJson,
 	quotaBar,
 	resetLabel,
+	setCachedQuotaReport,
 } from "../src/usage.js";
 
 /** Live-verified payload shape (probe 2026-09-24, agy 1.2.10). */
@@ -216,4 +218,58 @@ test("fetchAgyQuota: missing binary or junk degrades to undefined", async () => 
 	assert.equal(await fetchAgyQuota(missing), undefined);
 	const junk = makeFakeBinary("welcome to agy! enter your password:");
 	assert.equal(await fetchAgyQuota(junk), undefined);
+});
+
+test("fetchAgyQuota: deduplicates concurrent in-flight spawns for the same binary", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-usage-dedup-"));
+	const countFile = path.join(dir, "count.txt");
+	const payloadFile = path.join(dir, "out.txt");
+	const bin = path.join(dir, "agy");
+	fs.writeFileSync(payloadFile, REAL_PAYLOAD);
+	fs.writeFileSync(
+		bin,
+		`#!/bin/sh\necho x >> ${JSON.stringify(countFile)}\nsleep 0.15\ncat ${JSON.stringify(payloadFile)}\n`,
+		{ mode: 0o755 },
+	);
+
+	setCachedQuotaReport(undefined);
+	const [r1, r2] = await Promise.all([fetchAgyQuota(bin), fetchAgyQuota(bin)]);
+	assert.equal(r1?.groups.length, 2);
+	assert.equal(r2?.groups.length, 2);
+	assert.equal(fs.readFileSync(countFile, "utf8").trim().split("\n").length, 1);
+
+	// Subsequent sequential call still spawns fresh for /agy quota.
+	const r3 = await fetchAgyQuota(bin);
+	assert.equal(r3?.groups.length, 2);
+	assert.equal(fs.readFileSync(countFile, "utf8").trim().split("\n").length, 2);
+	setCachedQuotaReport(undefined);
+});
+
+test("getOrFetchAgyQuota: serves cached report within maxAgeMs and re-fetches once expired", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-usage-ttl-"));
+	const countFile = path.join(dir, "count.txt");
+	const payloadFile = path.join(dir, "out.txt");
+	const bin = path.join(dir, "agy");
+	fs.writeFileSync(payloadFile, REAL_PAYLOAD);
+	fs.writeFileSync(
+		bin,
+		`#!/bin/sh\necho x >> ${JSON.stringify(countFile)}\ncat ${JSON.stringify(payloadFile)}\n`,
+		{ mode: 0o755 },
+	);
+
+	setCachedQuotaReport(undefined);
+	const t0 = 1_790_000_000_000;
+	const first = await getOrFetchAgyQuota(bin, { now: t0, maxAgeMs: 60_000 });
+	assert.equal(first?.fetchedAt, t0);
+	assert.equal(first?.report.groups.length, 2);
+	assert.equal(fs.readFileSync(countFile, "utf8").trim().split("\n").length, 1);
+
+	const cached = await getOrFetchAgyQuota(bin, { now: t0 + 30_000, maxAgeMs: 60_000 });
+	assert.equal(cached?.fetchedAt, t0);
+	assert.equal(fs.readFileSync(countFile, "utf8").trim().split("\n").length, 1);
+
+	const refreshed = await getOrFetchAgyQuota(bin, { now: t0 + 60_000, maxAgeMs: 60_000 });
+	assert.equal(refreshed?.fetchedAt, t0 + 60_000);
+	assert.equal(fs.readFileSync(countFile, "utf8").trim().split("\n").length, 2);
+	setCachedQuotaReport(undefined);
 });

@@ -80,6 +80,7 @@ import { isValidAgyAgentName, listAgyAgents } from "./agents.js";
 import { formatSubagentRoster, SubagentRoster } from "./subagent-roster.js";
 import { spawn } from "node:child_process";
 import { fetchAgyQuota, formatAgyQuotaReport } from "./usage.js";
+import { registerAntigravityUsageSource } from "./usage-source.js";
 import { artifactOpenCommand, listAgyArtifacts } from "./artifacts.js";
 import { showArtifactsBrowser } from "./artifacts-ui.js";
 import { listAgyTasks, tailAgyTaskLog } from "./tasks.js";
@@ -604,6 +605,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		setActiveUi: (ui) => {
 			activeUi = ui;
 		},
+	});
+
+	registerAntigravityUsageSource(pi, {
+		getBinary: resolveAgyBinary,
+		getPlanName: () => acpDriver.snapshot().acp?.planTier?.name,
 	});
 
 	// AskAntigravity tool: one-shot delegation to agy (ported from
