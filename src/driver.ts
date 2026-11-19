@@ -620,10 +620,13 @@ export class StreamDriver implements TurnDriver {
 					turn.conversationId = parsed.conversationId;
 					this.#boundConversation = parsed.conversationId;
 				}
-				if (parsed.usage) {
-					turn.usage = parsed.usage;
-					emit(turn, { type: "usage", usage: parsed.usage });
-				}
+				// init.usage is cumulative billing metadata (it sums every turn and
+				// internal step of the agy conversation) and routinely exceeds the
+				// model window: 2.4M-34M against a 1M Gemini window on live agy
+				// 1.5.12 = pi's "3570% context", false overflow compaction and
+				// "Compacted from 2.440.363 tokens". Live turn usage arrives on
+				// step_update, so the init frame never reaches pi as usage.
+				if (parsed.usage) turn.usage = parsed.usage;
 				break;
 			}
 			case "step": {

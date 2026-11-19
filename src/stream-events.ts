@@ -115,8 +115,24 @@ export function toPiUsage(
 	},
 ): void {
 	if (!u) return;
-	piUsage.input = Math.max(piUsage.input, u.input_tokens ?? 0);
+	// The LATEST step wins for every counter it reports. `Math.max` latched the
+	// previous step's peak: with prompt caching agy reports the UNCACHED
+	// remainder as input_tokens and the cached prefix as cache_read_tokens, so
+	// a high uncached first step would stick to every later step (and pi's
+	// context occupancy with it). A frame that omits input_tokens keeps the
+	// known count.
+	if (u.input_tokens !== undefined) piUsage.input = u.input_tokens;
 	piUsage.output = u.output_tokens ?? piUsage.output;
 	piUsage.cacheRead = u.cache_read_tokens ?? piUsage.cacheRead;
-	piUsage.totalTokens = Math.max(u.total_tokens ?? 0, piUsage.input + piUsage.output);
+	// agy's total_tokens covers uncached input + output only; the cached prefix
+	// is real occupancy too (a 14k cache hit on a 2.2k uncached step reported
+	// total 2,234). Count it whenever the step reports cache reads and its own
+	// total does not already include them.
+	const cachedInput = piUsage.input + piUsage.cacheRead;
+	piUsage.totalTokens =
+		u.cache_read_tokens !== undefined &&
+		u.cache_read_tokens > 0 &&
+		(u.total_tokens === undefined || u.total_tokens < cachedInput)
+			? Math.max(u.total_tokens ?? 0, cachedInput + piUsage.output)
+			: Math.max(u.total_tokens ?? 0, piUsage.input + piUsage.output);
 }
