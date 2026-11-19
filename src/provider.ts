@@ -266,6 +266,12 @@ export interface ActivityFeatures {
 	onNativeEvent?: (event: NativeDisplayEvent) => void;
 	roster?: SubagentRoster;
 	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
+	/** Model context window used for usage sanity checks (0/undefined = no
+	 *  check). Pi derives context occupancy, auto-compaction and
+	 *  "Compacted from N tokens" from usage.totalTokens. */
+	contextWindow?: number;
+	/** Estimated input tokens of the whole pi transcript reaching this turn. */
+	contextInputTokens?: number;
 }
 
 /** Process-wide counter: round-trip ids must never repeat across turns in
@@ -327,9 +333,35 @@ export function consumeActivity(
 				appendThinking(stream, blocks, activity.delta);
 			}
 			return "continue";
-		case "usage":
-			toPiUsage(activity.usage, partial.usage);
+		case "usage": {
+			// Apply onto a CLONE first: a rejected candidate must leave the last
+			// valid step usage untouched. agy mixes per-step usage (step_update)
+			// with cumulative multi-turn/multi-step billing totals; a total over
+			// the model window while the transcript is nowhere near it is billing
+			// metadata, and writing it into pi made context occupancy read 3570%
+			// and triggered false overflow compaction.
+			const candidate = { ...partial.usage, cost: { ...partial.usage.cost } };
+			toPiUsage(activity.usage, candidate);
+			const contextWindow = feats.contextWindow ?? 0;
+			if (
+				contextWindow > 0 &&
+				candidate.totalTokens > contextWindow &&
+				(feats.contextInputTokens ?? 0) < contextWindow
+			) {
+				feats.log?.(
+					"usage-clamped",
+					{
+						reportedTotal: candidate.totalTokens,
+						contextWindow,
+						keptTotal: partial.usage.totalTokens,
+					},
+					"debug",
+				);
+				return "continue";
+			}
+			Object.assign(partial.usage, candidate);
 			return "continue";
+		}
 		case "tool_start":
 			// Transient status while Antigravity executes; no Pi tool call or
 			// model-facing result is produced. Persist a card only on completion.
@@ -557,6 +589,7 @@ async function runTurnDriver(
 	const agyModel = entry?.full ?? baseId;
 	const effort = entry?.efforts?.length ? toAgyEffort(options?.reasoning, entry.efforts) : undefined;
 
+	let compactedRotation = false;
 	if (!isContinuation && existing) {
 		const modelChanged = existing.modelId !== undefined && existing.modelId !== agyModel;
 		const sessionCompacted =
@@ -581,6 +614,10 @@ async function runTurnDriver(
 				stagedAgentByConversation.delete(existing.conversationId);
 			}
 			existing = null;
+			// The fresh conversation has seen NOTHING, and pi's compaction summary
+			// plus the turns kept after the cut exist only on the pi side. Flag the
+			// rotation so the digest ships once even with config.digest off.
+			if (sessionCompacted) compactedRotation = true;
 		}
 	}
 
@@ -632,8 +669,20 @@ async function runTurnDriver(
 		}
 		const watermark = existing?.lastMessageCount ?? 0;
 		// Late turns re-open the conversation with a synthetic prompt; the digest
-		// would re-send context agy already holds, so skip it.
-		const digest = config.digest && late.length === 0 ? buildContextDigest(context.messages, watermark) : "";
+		// would re-send context agy already holds, so skip it. A compaction
+		// rotation is the opposite case: the rotated conversation holds nothing,
+		// so the pi-side summary + kept post-cut turns ship even when digest is
+		// off (it would otherwise silently drop the user's compacted history).
+		// ownProvider is cleared on that turn: every turn still in pi's window was
+		// produced before the rotation, so none of it is in the new conversation.
+		const digest =
+			late.length === 0 && (config.digest || compactedRotation)
+				? buildContextDigest(
+						context.messages,
+						watermark,
+						compactedRotation ? { ownProvider: "" } : undefined,
+					)
+				: "";
 		// G1 delivery per engine. stream-json: digest rides inline in the prompt
 		// (the CLI has no context channel). ACP: the server advertises
 		// `embeddedContext`, so the digest ships as a native resource block
@@ -651,7 +700,11 @@ async function runTurnDriver(
 		// (issue #2, probed 2026-09-30), and the block routinely crossed it.
 		// ACP keeps the inline block (JSON-RPC transport; --agent is a CLI
 		// feature). A user-configured agent always wins: never clobber it.
-		const gateOpen = config.systemPrompt && !existing?.conversationId;
+		// Ephemeral turns (pi's /compact summarization sends cacheRetention
+		// "none") are throwaway: they must not carry the pi system prompt, which
+		// otherwise wraps the summarization instructions in pi's operating block
+		// and the tool-priority note.
+		const gateOpen = config.systemPrompt && !existing?.conversationId && !isEphemeral;
 		const rawSysPrompt = gateOpen ? getCurrentSystemPrompt(context.messages) || undefined : undefined;
 		let sysPrompt = rawSysPrompt;
 		let agent = config.agent;
@@ -754,6 +807,8 @@ async function runTurnDriver(
 		onNativeEvent: deps.onNativeEvent,
 		roster: deps.roster,
 		log: deps.log,
+		contextWindow: model.contextWindow,
+		contextInputTokens,
 	};
 
 	const drainTurn = async (h: TurnHandle): Promise<"parked" | undefined> => {
@@ -943,11 +998,31 @@ async function runTurnDriver(
 	if (blocks.textIdx === null && blocks.thinkingIdx === null) {
 		ensureTextOpen(stream, blocks);
 	}
-	if (blocks.partial.usage.input < contextInputTokens) {
-		blocks.partial.usage.input = contextInputTokens;
+	// Context occupancy bookkeeping. The estimated transcript size is the only
+	// input count that includes pi-side context agy never billed, so raise the
+	// input to it — but never on top of cache reads (they are already input the
+	// model saw; adding them double-counts and can push the total over the
+	// window on its own).
+	if (
+		blocks.partial.usage.input + blocks.partial.usage.cacheRead <
+		contextInputTokens
+	) {
+		blocks.partial.usage.input = Math.max(
+			blocks.partial.usage.input,
+			contextInputTokens - blocks.partial.usage.cacheRead,
+		);
 	}
 	if (blocks.partial.usage.totalTokens < blocks.partial.usage.input + blocks.partial.usage.output) {
 		blocks.partial.usage.totalTokens = blocks.partial.usage.input + blocks.partial.usage.output;
+	}
+	// Last line of defense: a cumulative billing total that slipped through (an
+	// engine path that reports usage without the activity guard) must not reach
+	// pi as occupancy. The transcript is demonstrably smaller than the window.
+	const windowSize = model.contextWindow ?? 0;
+	if (windowSize > 0 && blocks.partial.usage.totalTokens > windowSize && contextInputTokens < windowSize) {
+		blocks.partial.usage.cacheRead = 0;
+		blocks.partial.usage.input = contextInputTokens;
+		blocks.partial.usage.totalTokens = contextInputTokens + blocks.partial.usage.output;
 	}
 	finalize(stream, blocks, "stop");
 }

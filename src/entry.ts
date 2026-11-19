@@ -43,7 +43,7 @@ import {
 } from "./models.js";
 import { acpLoginPending, registerAgyCommand } from "./commands.js";
 import { captureUiSink, notifySafely, setStatusSafely, type UiSink } from "./session-ui.js";
-import { detectAuthEnvironment, tunnelCommand } from "./acp/auth-guide.js";
+import { AUTH_URL_FILE_HINT, detectAuthEnvironment, tunnelCommand } from "./acp/auth-guide.js";
 import { SessionStore } from "./sessions.js";
 import {
 	APPROVAL_PARK_MS,
@@ -315,7 +315,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					"On another machine? Forward the loopback port before the page redirects:",
 					`  ${tunnelCommand(port, detectAuthEnvironment())}`,
 					"",
-					"Lost this message? /agy auth-url reprints it.",
+					`Lost this message? The URL is also saved in ${AUTH_URL_FILE_HINT} (rerun /agy auth for a fresh one).`,
 				);
 			}
 			const text = parts.join("\n");

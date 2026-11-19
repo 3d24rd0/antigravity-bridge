@@ -197,9 +197,17 @@ export function resetLabel(resetTime: string, now: Date): string {
 const WINDOW_RANK: Record<string, number> = { "5h": 0, weekly: 1 };
 
 /** Full report text: per group, 5h bucket before weekly (the window users
- *  hit first), name labeled bar with percent and reset time. */
-export function formatAgyQuotaReport(report: AgyQuotaReport, now: Date = new Date()): string {
+ *  hit first), name labeled bar with percent and reset time. `opts.plan` (the
+ *  detected subscription plan) renders indented under the header: users
+ *  verifying "am I on Pro?" look at quota, not at doctor. */
+export function formatAgyQuotaReport(
+	report: AgyQuotaReport,
+	now: Date = new Date(),
+	opts: { plan?: string } = {},
+): string {
 	const lines: string[] = ["Antigravity quota (account-level, both engines)"];
+	const plan = opts.plan?.trim();
+	if (plan) lines.push(`  Plan: ${plan}`);
 	for (const group of report.groups) {
 		lines.push("", group.name);
 		if (group.description) {

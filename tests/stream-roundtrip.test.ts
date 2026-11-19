@@ -3,6 +3,9 @@
 
 import { test } from "vitest";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { parseAgyLine, toPiUsage, type AgyUsage } from "../src/stream-events.js";
 import { mapAgyToolToNative } from "../src/native-tools.js";
 import { StreamDriver, type DriverActivity } from "../src/driver.js";
@@ -49,6 +52,39 @@ test("toPiUsage: maps reported counts, leaves cost zero", () => {
 	assert.equal(usage.output, 5);
 	assert.equal(usage.totalTokens, 15);
 	assert.equal(usage.cost.total, 0);
+});
+
+test("toPiUsage: a multi-step update does not latch the previous step's peak", () => {
+	// Live agy 1.5.12 step_update #2 after prompt caching: input_tokens is the
+	// UNCACHED remainder, cache_read_tokens is the cached prefix, and
+	// total_tokens is only uncached input + output. Math.max() latched the
+	// first step's (uncached-only) peak into every later step, so pi read a
+	// context occupancy that no step ever reported and auto-compacted.
+	const usage = {
+		input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	toPiUsage({ input_tokens: 331_616, output_tokens: 20, total_tokens: 331_636 }, usage);
+	toPiUsage({ input_tokens: 2_206, output_tokens: 28, cache_read_tokens: 14_007, total_tokens: 2_234 }, usage);
+	// The latest step wins; the earlier peak is not carried forward.
+	assert.equal(usage.input, 2_206);
+	assert.equal(usage.output, 28);
+	assert.equal(usage.cacheRead, 14_007);
+	// Cached prefix counts toward occupancy: 2,206 + 14,007 + 28.
+	assert.equal(usage.totalTokens, 16_241);
+});
+
+test("toPiUsage: a step without input_tokens keeps the known input count", () => {
+	// thinking-only / partial frames omit input_tokens; they must not zero out
+	// the input count pi already has.
+	const usage = {
+		input: 500, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 500,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	toPiUsage({ output_tokens: 10 }, usage);
+	assert.equal(usage.input, 500);
+	assert.equal(usage.output, 10);
+	assert.equal(usage.totalTokens, 510);
 });
 
 test("native mapping: view_file becomes read with offset/limit", () => {
@@ -152,6 +188,67 @@ test("cumulative guard: a cumulative resend repeats the accumulated prefix (regr
 
 test("cumulative guard: first chunk never counts as a resend", () => {
 	assert.equal(isCumulativeResend("", "hello"), false);
+});
+
+test("driver: init.usage never emits a usage activity (cumulative billing spike)", async () => {
+	// Live agy reports cumulative multi-turn/multi-step billing totals in
+	// init.usage (2.4M-34M against a 1M window). Live turn usage rides
+	// step_update, which is what pi must see. Emitting the init frame made pi
+	// read a 3570% context occupancy and auto-compact.
+	const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-fake-init-usage-"));
+	const script = path.join(binDir, "agy");
+	fs.writeFileSync(
+		script,
+		[
+			"#!/usr/bin/env bash",
+			"read -r _line",
+			`printf '%s\\n' '{"event":"init","init":{"conversation_id":"conv-init","usage":{"input_tokens":2440363,"output_tokens":50,"total_tokens":2440413}}}'`,
+			"sleep 0.05",
+			`printf '%s\\n' '{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"hi","usage":{"input_tokens":2206,"output_tokens":28,"cache_read_tokens":14007,"total_tokens":2234}}}'`,
+			"sleep 0.05",
+			`printf '%s\\n' '{"event":"result","result":{"status":"SUCCESS","response":"hi","conversation_id":"conv-init"}}'`,
+			"",
+		].join("\n"),
+		{ mode: 0o755 },
+	);
+	const prevPath = process.env.PATH;
+	process.env.PATH = `${binDir}:${prevPath ?? ""}`;
+	try {
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "hi",
+			cwd: binDir,
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const activities: DriverActivity[] = [];
+		const collecting = (async () => {
+			for (;;) {
+				const activity = await handle.next();
+				if (activity === null) return;
+				activities.push(activity);
+			}
+		})();
+		const outcome = await handle.outcome;
+		await collecting;
+		assert.equal(outcome.status, "OK");
+		// The conversation binding from init still lands.
+		assert.equal(outcome.conversationId, "conv-init");
+		const usage = activities.filter(
+			(a): a is Extract<DriverActivity, { type: "usage" }> => a.type === "usage",
+		);
+		assert.deepEqual(
+			usage.map((a) => a.usage),
+			[{ input_tokens: 2206, output_tokens: 28, cache_read_tokens: 14007, total_tokens: 2234 }],
+		);
+	} finally {
+		if (prevPath === undefined) delete process.env.PATH;
+		else process.env.PATH = prevPath;
+		fs.rmSync(binDir, { recursive: true, force: true });
+	}
 });
 
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";

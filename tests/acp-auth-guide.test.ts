@@ -51,6 +51,20 @@ test("authStepGuide: the tunnel route says what to do, in order, with the wait b
 	assert.match(lines, /buildbox/);
 });
 
+test("authStepGuide: the tunnel route offers the pasted-callback fallback, so no ssh tunnel is strictly required", () => {
+	const lines = authStepGuide("tunnel", env()).join("\n");
+	assert.match(lines, /No ssh tunnel/);
+	assert.match(lines, /paste the browser's final redirect URL/);
+	// The tunnel stays the first suggestion; the fallback is an addition.
+	assert.match(lines, /ssh tunnel command/);
+});
+
+test("authStepGuide: the browser route does not mention the pasted-callback fallback", () => {
+	const lines = authStepGuide("browser", env({ hasGui: true })).join("\n");
+	assert.doesNotMatch(lines, /redirect URL/);
+	assert.doesNotMatch(lines, /No ssh tunnel/);
+});
+
 test("authStepGuide: the browser route does not mention tunnels", () => {
 	const lines = authStepGuide("browser", env({ hasGui: true })).join("\n");
 	assert.match(lines, /browser opens/);
@@ -65,7 +79,6 @@ test("tunnelCommand: uses the real user and host, never a placeholder", () => {
 
 test("authFailureHint: maps the common failures onto a next step", () => {
 	assert.match(authFailureHint("a sign-in is already running; wait for it to finish"), /already in progress/);
-	assert.match(authFailureHint("request timed out after 600000ms"), /auth-url/);
 	assert.match(authFailureHint("the server accepted the sign-in but holds no usable credentials"), /run \/agy auth again/);
 	assert.match(authFailureHint("spawn ENOENT"), /\/agy doctor/);
 	assert.match(authFailureHint("Unsupported auth method: 'x'"), /does not offer that method/);
@@ -74,6 +87,25 @@ test("authFailureHint: maps the common failures onto a next step", () => {
 		/not your Antigravity subscription/,
 	);
 	assert.match(authFailureHint("GEMINI_API_KEY must be set"), /Export GEMINI_API_KEY/);
+});
+
+test("authFailureHint: a timeout points at /agy auth and the saved URLs, never the dead /agy auth-url", () => {
+	const hint = authFailureHint("request timed out after 600000ms");
+	assert.match(hint, /\/agy auth again/);
+	assert.ok(hint.includes(AUTH_URL_FILE_HINT));
+	assert.match(hint, /acp-auth-urls\.log/);
+	assert.match(hint, /ssh tunnel/);
+	assert.doesNotMatch(hint, /\/agy auth-url/);
+});
+
+test("authStepGuide: both routes warn that the page after approving is not the outcome", () => {
+	for (const mode of ["browser", "tunnel"] as const) {
+		const lines = authStepGuide(mode, env({ hasGui: mode === "browser" })).join("\n");
+		assert.match(lines, /empty page/, mode);
+		assert.match(lines, /connection reset/, mode);
+		assert.match(lines, /one-shot callback listener closes/, mode);
+		assert.match(lines, /Pi command result/, mode);
+	}
 });
 
 test("authStepGuide: the tunnel route names the saved copy, so no command is needed to recover it", () => {

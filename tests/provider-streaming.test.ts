@@ -24,12 +24,13 @@ import {
 	type SimpleStreamOptions,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
-import { ToolRoundTrips, WrapperReplay, consumeActivity, createStreamSimple } from "../src/provider.js";
+import { ToolRoundTrips, WrapperReplay, consumeActivity, createStreamSimple, SYSTEM_PROMPT_PREAMBLE, TOOL_PRIORITY_NOTE, type BlockState } from "../src/provider.js";
 import { toAgyEffort } from "../src/models.js";
 import { TurnDiffContext } from "../src/diff-render.js";
 import { SessionStore } from "../src/sessions.js";
 import { setCachedQuotaReport } from "../src/usage.js";
-import type { StreamDriver, DriverTurnRequest } from "../src/driver.js";
+import { resetSyspromptAgentForTests } from "../src/sysprompt-agent.js";
+import type { DriverActivity, StreamDriver, DriverTurnRequest } from "../src/driver.js";
 
 const model: Model<Api> = {
 	id: "gemini-flash",
@@ -494,4 +495,343 @@ test("streamSimple isolates ephemeral turns with cacheRetention: 'none'", async 
 	assert.ok(storedAfter);
 	assert.equal(storedAfter.conversationId, "conv-existing-123");
 	assert.equal(storedAfter.lastMessageCount, 2);
+});
+
+// --- T3 (S3): inflated token/context usage + /compact continuity -------------
+//
+// Live agy reports cumulative multi-turn/multi-step billing totals (2.44M,
+// 34M) against a 1M context window, and pi derives context occupancy, its
+// compaction checks and "Compacted from X tokens" from usage.totalTokens. A
+// spike that clears the window while the transcript is nowhere near it is
+// billing metadata, not occupancy: it must never reach the assistant message.
+// After /compact the binding rotates to a fresh conversation, so the pi-side
+// summary + kept post-cut turns have to ship once even with digest off.
+
+/** Assistant message shell for consumeActivity tests (zero usage). */
+function usageBlocks(): BlockState {
+	return {
+		partial: {
+			role: "assistant",
+			content: [],
+			api: "agy-bridge" as Api,
+			provider: "antigravity",
+			model: "gemini-flash",
+			usage: {
+				input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		},
+		textIdx: null,
+		thinkingIdx: null,
+		started: false,
+	};
+}
+
+const VALID_STEP_USAGE = {
+	input_tokens: 2_206,
+	output_tokens: 28,
+	cache_read_tokens: 14_007,
+	total_tokens: 2_234,
+};
+
+test("consumeActivity: a cumulative usage spike over the context window is discarded, the last valid step survives", () => {
+	const stream = createAssistantMessageEventStream();
+	const blocks = usageBlocks();
+	const logs: Array<[string, unknown, string?]> = [];
+	const feats = {
+		contextWindow: 1_000_000,
+		contextInputTokens: 15_000,
+		log: (event: string, data: unknown, level?: string) => logs.push([event, data, level]),
+	};
+	const diffCtx = new TurnDiffContext({ toplevel: () => null, showHead: () => null });
+
+	assert.equal(
+		consumeActivity(stream, blocks, { type: "usage", usage: VALID_STEP_USAGE }, diffCtx, process.cwd(), feats),
+		"continue",
+	);
+	// Uncached input + cached prefix + output: the real occupancy of the step.
+	assert.equal(blocks.partial.usage.input, 2_206);
+	assert.equal(blocks.partial.usage.cacheRead, 14_007);
+	assert.equal(blocks.partial.usage.totalTokens, 16_241);
+
+	for (const spike of [2_440_363, 34_000_000]) {
+		assert.equal(
+			consumeActivity(
+				stream,
+				blocks,
+				{ type: "usage", usage: { input_tokens: spike, output_tokens: 40, total_tokens: spike + 40 } },
+				diffCtx,
+				process.cwd(),
+				feats,
+			),
+			"continue",
+		);
+		// Discarded whole: neither the spike nor a latched peak lands.
+		assert.equal(blocks.partial.usage.input, 2_206);
+		assert.equal(blocks.partial.usage.cacheRead, 14_007);
+		assert.equal(blocks.partial.usage.totalTokens, 16_241);
+	}
+	assert.deepEqual(
+		logs.map(([event, data]) => [event, (data as { reportedTotal?: number }).reportedTotal]),
+		[
+			["usage-clamped", 2_440_403],
+			["usage-clamped", 34_000_040],
+		],
+	);
+});
+
+/** Fake driver that replays scripted activities, then settles OK bound to
+ *  `conversationId`. Records the turn request the provider handed over. */
+function scriptedDriver(
+	activities: DriverActivity[],
+	seen: { opts?: DriverTurnRequest },
+	conversationId = "conv-scripted",
+): StreamDriver {
+	return {
+		run: async (opts: DriverTurnRequest) => {
+			seen.opts = opts;
+			const queue = [...activities];
+			return {
+				id: "scripted-turn",
+				outcome: Promise.resolve({
+					status: "OK" as const,
+					response: "ok",
+					finished: true,
+					aborted: false,
+					conversationId,
+				}),
+				next: async () => queue.shift() ?? null,
+				pushExternal: () => {},
+			};
+		},
+	} as unknown as StreamDriver;
+}
+
+function withEnv(values: Record<string, string | undefined>, fn: () => Promise<void>): Promise<void> {
+	const prev: Record<string, string | undefined> = {};
+	for (const [k, v] of Object.entries(values)) {
+		prev[k] = process.env[k];
+		if (v === undefined) delete process.env[k];
+		else process.env[k] = v;
+	}
+	return fn().finally(() => {
+		for (const [k, v] of Object.entries(prev)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	});
+}
+
+test("streamSimple: cumulative multi-million usage spikes never reach the turn's reported usage", async () => {
+	await withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined }, async () => {
+		const seen: { opts?: DriverTurnRequest } = {};
+		const driver = scriptedDriver(
+			[
+				{ type: "usage", usage: VALID_STEP_USAGE },
+				{ type: "usage", usage: { input_tokens: 2_440_363, output_tokens: 40, total_tokens: 2_440_403 } },
+				{ type: "usage", usage: { input_tokens: 34_000_000, output_tokens: 40, total_tokens: 34_000_040 } },
+			],
+			seen,
+		);
+		const streamSimple = createStreamSimple({
+			entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
+			store: new SessionStore(tmpStorePath()),
+			driver,
+			roundTrips: new ToolRoundTrips(driver),
+		});
+		let final: AssistantMessage | undefined;
+		const stream = streamSimple(
+			{ ...model, id: "gemini-flash" },
+			contextWith("hi"),
+			{ cwd: process.cwd() } as unknown as SimpleStreamOptions,
+		);
+		for await (const ev of stream) {
+			if (ev.type === "done") final = ev.message;
+		}
+		assert.ok(final, "the turn must settle with a done event");
+		// Occupancy stays the valid step's, far below the 1M window: pi's
+		// context %, overflow check and "Compacted from N tokens" read this.
+		assert.equal(final.usage.input, 2_206);
+		assert.equal(final.usage.cacheRead, 14_007);
+		assert.equal(final.usage.output, 28);
+		assert.equal(final.usage.totalTokens, 16_241);
+		assert.ok(
+			final.usage.totalTokens <= model.contextWindow,
+			`reported total ${final.usage.totalTokens} must fit the ${model.contextWindow} window`,
+		);
+	});
+});
+
+/** pi context after a compaction: the summary, then turns kept after the cut,
+ *  then the current prompt. */
+function compactedContext(currentPrompt: string): TranscriptContext {
+	const assistantTurn = (provider: string, text: string) => ({
+		role: "assistant" as const,
+		provider,
+		content: [{ type: "text" as const, text }],
+		timestamp: Date.now(),
+		model: "some-model",
+		usage: {
+			input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop" as const,
+		api: "agy-bridge" as Api,
+	});
+	return normalizeContext({
+		systemPrompt: undefined,
+		messages: [
+			{ role: "user", content: "m1", timestamp: Date.now() },
+			assistantTurn("claude", "claude says hi"),
+			{ role: "user", content: "m2", timestamp: Date.now() },
+			assistantTurn("antigravity", "pre-cut agy answer"),
+			{
+				role: "user",
+				content:
+					"The conversation history has been compacted into the following summary:\n<summary>\nsqlite was chosen\n</summary>",
+				timestamp: Date.now(),
+			},
+			{ role: "user", content: "kept post-cut question", timestamp: Date.now() },
+			assistantTurn("antigravity", "agy post-cut answer"),
+			{ role: "user", content: currentPrompt, timestamp: Date.now() },
+		],
+	});
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+	return haystack.split(needle).length - 1;
+}
+
+test("sessionCompacted rotation ships the compaction summary + kept post-cut turns once, with digest off", async () => {
+	await withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-compact-rot-"));
+		const store = new SessionStore(path.join(dir, "sessions.json"));
+		// A long conversation bound to agy, then pi compacts it down to 8.
+		store.set(`cwd:${dir}`, {
+			conversationId: "conv-long",
+			lastStepIdx: -1,
+			lastMessageCount: 12,
+			modelId: "gemini-3.6-flash",
+		});
+		const seen: { opts?: DriverTurnRequest } = {};
+		const driver = scriptedDriver([], seen, "conv-fresh");
+		const streamSimple = createStreamSimple({
+			entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
+			store,
+			driver,
+			roundTrips: new ToolRoundTrips(driver),
+		});
+		try {
+			const turn1 = streamSimple(
+				{ ...model, id: "gemini-flash" },
+				compactedContext("current question"),
+				{ cwd: dir } as unknown as SimpleStreamOptions,
+			);
+			for await (const ev of turn1) void ev;
+
+			// The rotation starts a fresh agy conversation: nothing it needs is
+			// in agy's own history, so the pi-side context ships even though
+			// config.digest is off.
+			assert.equal(seen.opts?.conversationId, null, "compaction rotates the conversation");
+			const prompt = seen.opts?.prompt ?? "";
+			assert.equal(countOccurrences(prompt, "[pi compaction summary]"), 1);
+			assert.ok(prompt.includes("sqlite was chosen"), "the summary body ships");
+			assert.ok(prompt.includes("kept post-cut question"), "kept post-cut user turn ships");
+			assert.ok(prompt.includes("agy post-cut answer"), "kept post-cut own turn ships (fresh conversation)");
+			assert.ok(!prompt.includes("pre-cut agy answer"), "pre-cut detail stays out");
+			assert.ok(prompt.endsWith("current question"));
+
+			// The next turn resumes the fresh conversation: no rotation, digest
+			// off, so nothing is re-injected.
+			seen.opts = undefined;
+			const turn2 = streamSimple(
+				{ ...model, id: "gemini-flash" },
+				compactedContext("second question"),
+				{ cwd: dir } as unknown as SimpleStreamOptions,
+			);
+			for await (const ev of turn2) void ev;
+			const second = seen.opts as DriverTurnRequest | undefined;
+			assert.equal(second?.conversationId, "conv-fresh");
+			const prompt2 = second?.prompt ?? "";
+			assert.equal(countOccurrences(prompt2, "[pi compaction summary]"), 0);
+			assert.equal(prompt2, "second question");
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+test("ephemeral turn (cacheRetention 'none') never opens the pi system-prompt gate", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-ephemeral-agents-"));
+	await withEnv(
+		{ AGY_ENGINE: "stream-json", AGY_SYSTEM_PROMPT: "on", AGY_AGENT: undefined, AGY_AGENTS_ROOT: root },
+		async () => {
+			resetSyspromptAgentForTests();
+			const seen: { opts?: DriverTurnRequest } = {};
+			const driver = capturingDriver(seen);
+			const streamSimple = createStreamSimple({
+				entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
+				store: new SessionStore(tmpStorePath()),
+				driver,
+				roundTrips: new ToolRoundTrips(driver),
+			});
+			try {
+				const context = normalizeContext({
+					systemPrompt: "You are pi. Follow AGENTS.md.",
+					messages: [{ role: "user", content: "summarize this session", timestamp: Date.now() }],
+				});
+				const stream = streamSimple(
+					{ ...model, id: "gemini-flash" },
+					context,
+					{ cwd: process.cwd(), cacheRetention: "none" } as unknown as SimpleStreamOptions,
+				);
+				for await (const ev of stream) void ev;
+				// Nothing pi-side rides a throwaway summarization turn: no carrier
+				// agent staged, no prompt framing.
+				assert.equal(seen.opts?.agent, undefined, "no carrier agent for an ephemeral turn");
+				const prompt = seen.opts?.prompt ?? "";
+				assert.equal(prompt, "summarize this session");
+				assert.ok(!prompt.includes(SYSTEM_PROMPT_PREAMBLE));
+				assert.ok(!prompt.includes(TOOL_PRIORITY_NOTE));
+				assert.deepEqual(fs.readdirSync(root), [], "nothing staged into the agents root");
+			} finally {
+				fs.rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
+});
+
+test("preserve: a non-ephemeral fresh turn still ships the pi system prompt framing", async () => {
+	await withEnv(
+		{ AGY_ENGINE: "acp", AGY_SYSTEM_PROMPT: "on", AGY_AGENT: undefined },
+		async () => {
+			resetSyspromptAgentForTests();
+			const streamDriver = capturingDriver({});
+			const seen: { opts?: DriverTurnRequest } = {};
+			const acpDriver = capturingDriver(seen);
+			const streamSimple = createStreamSimple({
+				entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
+				store: new SessionStore(tmpStorePath()),
+				driver: streamDriver,
+				acpDriver,
+				roundTrips: new ToolRoundTrips(streamDriver),
+			});
+			const context = normalizeContext({
+				systemPrompt: "You are pi. Follow AGENTS.md.",
+				messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
+			});
+			const stream = streamSimple(
+				{ ...model, id: "gemini-flash" },
+				context,
+				{ cwd: process.cwd() } as unknown as SimpleStreamOptions,
+			);
+			for await (const ev of stream) void ev;
+			const prompt = seen.opts?.prompt ?? "";
+			assert.ok(prompt.startsWith(SYSTEM_PROMPT_PREAMBLE));
+			assert.ok(prompt.includes("You are pi. Follow AGENTS.md."));
+			assert.ok(prompt.includes(TOOL_PRIORITY_NOTE));
+		},
+	);
 });

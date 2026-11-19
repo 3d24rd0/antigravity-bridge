@@ -18,6 +18,7 @@ import {
 	type AuthMode,
 } from "./acp/auth-guide.js";
 import { authMethodLabel, browserMethods, isBrowserMethod } from "./acp/auth-methods.js";
+import { runCallbackPasteLoop } from "./acp/callback-relay.js";
 import type { UiSink } from "./session-ui.js";
 import { AGY_EFFORT_ORDER, type AgyModelEntry } from "./models.js";
 import type { SessionStore } from "./sessions.js";
@@ -313,47 +314,83 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					"Signing in: the Google sign-in opens in your browser and completes when you finish it (minutes-scale). If no browser opens, pi shows the sign-in URL to copy.",
 					"info",
 				);
-				const r = await runAcpAuth({
-					bin: status.bin,
-					extraEnv: ctx.authCapture?.browserEnv,
-					authUrlFile: ctx.authCapture?.file,
-					log: ctx.acpLog,
-					// The server publishes the methods your account can use; that list
-					// is the only honest source, and it explains itself.
-					chooseMethod: async (methods) => {
-						let explained = false;
-						// Only browser methods are offered: same verified flow, and the
-						// server validates the id. Credential methods are named, not
-						// chosen, because this bridge cannot make them usable.
-						const offered = browserMethods(methods);
-						const skipped = methods.filter((m) => !isBrowserMethod(m.id));
-						let picked = offered[0] ?? null;
-						const labels = offered.map(authMethodLabel);
-						if (offered.length > 1 && ui && cmdCtx.hasUI) {
-							const choiceText = await ui.select("How do you sign in to Antigravity?", labels);
-							if (choiceText === undefined) return undefined; // cancelled
-							picked = offered[labels.indexOf(choiceText)] ?? picked;
-						}
-						if (skipped.length > 0 && (offered.length === 0 || offered.length > 1)) {
-							say(
-								`This server also offers ${skipped.map((m) => m.name ?? m.id).join(", ")}, which this bridge does not configure. /agy auth-manual covers their requirements.`,
-							);
-						}
-						if (!picked) {
-							// Server published only credential methods: say so instead of
-							// trying one blindly.
-							say(
-								`This server offers only credential methods (${methods.map((m) => m.name ?? m.id).join(", ")}), which this bridge does not configure. /agy auth-manual has their requirements.`,
-								"warning",
-							);
-							explained = true;
-							return undefined;
-						}
-						const mode: AuthMode = authEnv.hasGui && authEnv.hasOpener ? "browser" : "tunnel";
-						say(authStepGuide(mode, authEnv).join("\n"));
-						return picked.id;
-					},
-				});
+				// Tunnel mode: the browser's final redirect lands on a loopback
+				// listener owned by the ACP server HERE, which an SSH-only user cannot
+				// reach. Pasting that URL is the alternative to `ssh -L`, so the paste
+				// dialog is armed when the server publishes the sign-in URL (the
+				// "auth-url" event) and runs alongside the blocking sign-in.
+				const mode: AuthMode = authEnv.hasGui && authEnv.hasOpener ? "browser" : "tunnel";
+				const pasteAbort = new AbortController();
+				let authSettled = false;
+				let pasteLoop: Promise<void> | null = null;
+				const authLog = (msg: string, data?: unknown): void => {
+					// Every driver event still reaches the shared sink unchanged.
+					ctx.acpLog(msg, data);
+					if (msg !== "auth-url" || mode !== "tunnel" || !ui || !cmdCtx.hasUI || pasteLoop) return;
+					const port = (data as { port?: number | null } | undefined)?.port;
+					if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) return;
+					pasteLoop = runCallbackPasteLoop({
+						port,
+						signal: pasteAbort.signal,
+						isSettled: () => authSettled,
+						prompt: (title, placeholder, signal) => ui.input(title, placeholder, { signal }),
+						notify: (message, level) => say(message, level),
+					}).catch((err: unknown) => {
+						// A side channel: a host failure must never break the sign-in itself.
+						say(`Pasted-URL fallback stopped: ${err instanceof Error ? err.message : String(err)}`, "warning");
+					});
+				};
+				let r: Awaited<ReturnType<typeof runAcpAuth>> | undefined;
+				try {
+					r = await runAcpAuth({
+						bin: status.bin,
+						extraEnv: ctx.authCapture?.browserEnv,
+						authUrlFile: ctx.authCapture?.file,
+						log: authLog,
+						// The server publishes the methods your account can use; that list
+						// is the only honest source, and it explains itself.
+						chooseMethod: async (methods) => {
+							let explained = false;
+							// Only browser methods are offered: same verified flow, and the
+							// server validates the id. Credential methods are named, not
+							// chosen, because this bridge cannot make them usable.
+							const offered = browserMethods(methods);
+							const skipped = methods.filter((m) => !isBrowserMethod(m.id));
+							let picked = offered[0] ?? null;
+							const labels = offered.map(authMethodLabel);
+							if (offered.length > 1 && ui && cmdCtx.hasUI) {
+								const choiceText = await ui.select("How do you sign in to Antigravity?", labels);
+								if (choiceText === undefined) return undefined; // cancelled
+								picked = offered[labels.indexOf(choiceText)] ?? picked;
+							}
+							if (skipped.length > 0 && (offered.length === 0 || offered.length > 1)) {
+								say(
+									`This server also offers ${skipped.map((m) => m.name ?? m.id).join(", ")}, which this bridge does not configure. /agy auth-manual covers their requirements.`,
+								);
+							}
+							if (!picked) {
+								// Server published only credential methods: say so instead of
+								// trying one blindly.
+								say(
+									`This server offers only credential methods (${methods.map((m) => m.name ?? m.id).join(", ")}), which this bridge does not configure. /agy auth-manual has their requirements.`,
+									"warning",
+								);
+								explained = true;
+								return undefined;
+							}
+							say(authStepGuide(mode, authEnv).join("\n"));
+							return picked.id;
+						},
+					});
+				} finally {
+					// Whatever ended the sign-in (success, error, timeout, cancel), the
+					// paste dialog must not outlive it: closing it here is what keeps a
+					// stale prompt from swallowing the reported outcome.
+					authSettled = true;
+					pasteAbort.abort();
+					await pasteLoop;
+				}
+				if (!r) return;
 				ctx.fileLog.log("acp-auth", r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? "info" : "warn");
 				if (r.cancelled) return;
 				if (r.ok) {
@@ -758,7 +795,8 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						ui?.notify("quota unavailable: agy did not return a /usage payload (see /agy doctor for binary health).", "warning");
 						return;
 					}
-					ui?.notify(formatAgyQuotaReport(report), "info");
+					const plan = planSummary(ctx.acpDriver.snapshot().acp?.planTier, ctx.engine);
+					ui?.notify(formatAgyQuotaReport(report, new Date(), { plan }), "info");
 				} finally {
 					ui?.setStatus("agy-quota", undefined);
 				}
