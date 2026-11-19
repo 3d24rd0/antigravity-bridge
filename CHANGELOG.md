@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.4.1]
+
+### Fixed
+
+- **A working Google login survives a server update that rewrites its settings.** Google's ACP server owns `~/.gemini/antigravity-acp/settings.json` and reads it at startup, and a server update can rewrite it: observed in the field, a completed `oauth-personal` login replaced by `auth.type: gemini-api-key` with no `GEMINI_API_KEY` anywhere, which turned every `session/new` into "ACP authentication required … GEMINI_API_KEY is not set". Nothing noticed, because any present `auth.type` counted as configured and `gemini-api-key` was exempt from the login check. Setup now compares the declared method with the credential actually available: with a login token present it restores `oauth-personal`, writes it, and says so; with nothing to repair it fails with the state and both routes instead of the server's raw key message.
+- **`/agy auth` no longer leaves the login half-applied.** The sign-in completed in its own short-lived server and never wrote `settings.json`, so the next spawn read whatever the server's file said or failed on it. A completed sign-in now writes the method it used (`oauth-personal`, `gemini-api-key`), the result reports it as `persisted`, and a method whose settings shape has never been observed (`oauth-business`, `agent-platform`) is named but never invented into the file.
+
+### Added
+
+- **`/agy doctor` reports the auth check**, not just the declared type: one line naming the method, whether a Google login exists and whether `GEMINI_API_KEY` is set, so a rewrite is visible before the first failed turn.
+- **`/agy acp-update` and startup warn when the declared auth method cannot work**, where the user is already reading about the update, instead of leaving it to a failed turn.
+
+### Changed
+
+- **The README states the auth guarantee, so nobody has to read the source to trust it.** One line in *Safety, up front*: the login check `stat`s `acp_token.json` without opening it, `GEMINI_API_KEY` is read as a boolean and never as a value, and the repair merges `settings.json` so keys it did not write survive.
+
 ## [1.4.0]
 
 ### Added

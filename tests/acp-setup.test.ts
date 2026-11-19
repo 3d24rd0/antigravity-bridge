@@ -9,9 +9,12 @@ import path from "node:path";
 import { describe, test } from "vitest";
 import {
 	buildIdFromArchive,
+	describeAuthDiagnosis,
+	diagnoseAuth,
 	ensureAcpReady,
 	installAcpBinary,
 	inspectAcpSetup,
+	inspectAuthDrift,
 	launchConfigFor,
 	MANUAL_SETUP,
 	platformKey,
@@ -108,8 +111,127 @@ describe("acp/setup auth state", () => {
 	});
 });
 
+describe("acp/setup auth diagnosis", () => {
+	// A declared credential method whose credential is absent cannot
+	// authenticate: the server fails session/new. The bridge must know that
+	// before spawning, so setup/doctor/the update notice share one verdict.
+	const oauth = (token: boolean) => ({ token, apiKey: false });
+
+	test("a declared API key with the key set is healthy", () => {
+		const d = diagnoseAuth({ configured: true, type: "gemini-api-key" }, { token: false, apiKey: true });
+		assert.equal(d.broken, false);
+		assert.equal(d.repairable, false);
+		assert.equal(describeAuthDiagnosis(d), "gemini-api-key (GEMINI_API_KEY set)");
+	});
+
+	test("a declared API key with a login present is broken but repairable", () => {
+		const d = diagnoseAuth({ configured: true, type: "gemini-api-key" }, oauth(true));
+		assert.equal(d.broken, true);
+		assert.equal(d.repairable, true);
+		assert.equal(
+			describeAuthDiagnosis(d),
+			"gemini-api-key without GEMINI_API_KEY; a Google login is present, so setup restores oauth-personal",
+		);
+	});
+
+	test("a declared API key with no credential at all names both routes", () => {
+		const d = diagnoseAuth({ configured: true, type: "gemini-api-key" }, oauth(false));
+		assert.equal(d.broken, true);
+		assert.equal(d.repairable, false);
+		assert.equal(
+			describeAuthDiagnosis(d),
+			'gemini-api-key without GEMINI_API_KEY and no Google login: set GEMINI_API_KEY, or put {"auth":{"type":"oauth-personal"}} in settings.json and run /agy auth',
+		);
+	});
+
+	test("oauth-personal is healthy once the login landed", () => {
+		const d = diagnoseAuth({ configured: true, type: "oauth-personal" }, oauth(true));
+		assert.equal(d.broken, false);
+		assert.equal(describeAuthDiagnosis(d), "oauth-personal (signed in)");
+	});
+
+	test("oauth-personal without a login is healthy but says so", () => {
+		const d = diagnoseAuth({ configured: true, type: "oauth-personal" }, oauth(false));
+		assert.equal(d.broken, false);
+		assert.equal(describeAuthDiagnosis(d), "oauth-personal (no sign-in yet; /agy auth)");
+	});
+
+	test("an unconfigured dir is never broken", () => {
+		const d = diagnoseAuth({ configured: false }, oauth(false));
+		assert.equal(d.declared, undefined);
+		assert.equal(d.broken, false);
+		assert.equal(describeAuthDiagnosis(d), "not configured");
+	});
+
+	test("a login-only state reads as signed in", () => {
+		// settings.json without an auth block but acp_token.json present: the
+		// server is usable, so doctor must not report a missing method.
+		const d = diagnoseAuth({ configured: true, type: "token" }, oauth(true));
+		assert.equal(d.broken, false);
+		assert.equal(describeAuthDiagnosis(d), "token (signed in)");
+	});
+});
+
 describe("acp/setup ensureAcpReady", () => {
 	test("ready installation is a no-op with no network", async () => {
+		const root = tmpDir();
+		const gdir = tmpDir();
+		fs.mkdirSync(path.join(root, "current"), { recursive: true });
+		const bin = path.join(root, "current", "agy_acp_server.par");
+		fs.writeFileSync(bin, "#!/bin/sh\n");
+		fs.chmodSync(bin, 0o755);
+		writeAuthType("oauth-personal", gdir);
+		fs.writeFileSync(path.join(gdir, "acp_token.json"), "credential-not-read");
+
+		const status = await ensureAcpReady({
+			installRoot: root,
+			geminiDir: gdir,
+			env: {},
+			fetchImpl: () => Promise.reject(new Error("network must not be touched")),
+		});
+		assert.equal(status.ok, true);
+		if (!status.ok) return;
+		assert.equal(status.bin, bin);
+		assert.equal(status.binarySource, "existing");
+		assert.equal(status.auth, "oauth-personal");
+		assert.deepEqual(status.actions, []);
+		assert.equal(status.needsLogin, false);
+	});
+
+	test("a server rewrite to gemini-api-key meets the intact login and is repaired", async () => {
+		const root = tmpDir();
+		const gdir = tmpDir();
+		fs.mkdirSync(path.join(root, "current"), { recursive: true });
+		const bin = path.join(root, "current", "agy_acp_server.par");
+		fs.writeFileSync(bin, "#!/bin/sh\n");
+		fs.chmodSync(bin, 0o755);
+		// State observed in the field: an agy update rewrote settings.json, the
+		// Google login from before it is still on disk, no API key anywhere.
+		writeAuthType("gemini-api-key", gdir);
+		fs.writeFileSync(path.join(gdir, "acp_token.json"), "credential-not-read");
+		const progress: string[] = [];
+
+		const status = await ensureAcpReady({
+			installRoot: root,
+			geminiDir: gdir,
+			env: {},
+			onProgress: (m) => progress.push(m),
+			fetchImpl: () => Promise.reject(new Error("network must not be touched")),
+		});
+		assert.equal(status.ok, true);
+		if (!status.ok) return;
+		assert.equal(status.auth, "oauth-personal");
+		// The login is intact, so nothing asks the user to sign in again.
+		assert.equal(status.needsLogin, false);
+		assert.equal(status.actions.length, 1);
+		assert.match(status.actions[0], /restored oauth-personal/);
+		assert.equal(progress.length, 1);
+		assert.match(progress[0], /API key .* not set/);
+		// The repair is written, so the next spawn reads a workable method.
+		assert.equal(readAuthState(gdir).type, "oauth-personal");
+	});
+
+	test("a server rewrite to gemini-api-key with no credential fails with both routes", async () => {
 		const root = tmpDir();
 		const gdir = tmpDir();
 		fs.mkdirSync(path.join(root, "current"), { recursive: true });
@@ -124,13 +246,37 @@ describe("acp/setup ensureAcpReady", () => {
 			env: {},
 			fetchImpl: () => Promise.reject(new Error("network must not be touched")),
 		});
+		assert.equal(status.ok, false);
+		if (status.ok) return;
+		assert.equal(status.stage, "auth");
+		assert.match(status.error, /GEMINI_API_KEY/);
+		assert.match(status.error, /oauth-personal/);
+		assert.match(status.error, /\/agy auth/);
+		// Nothing to repair with: the server's file is left as the user has it.
+		assert.equal(readAuthState(gdir).type, "gemini-api-key");
+	});
+
+	test("a declared API key with the key set is left alone", async () => {
+		const root = tmpDir();
+		const gdir = tmpDir();
+		fs.mkdirSync(path.join(root, "current"), { recursive: true });
+		const bin = path.join(root, "current", "agy_acp_server.par");
+		fs.writeFileSync(bin, "#!/bin/sh\n");
+		fs.chmodSync(bin, 0o755);
+		writeAuthType("gemini-api-key", gdir);
+
+		const status = await ensureAcpReady({
+			installRoot: root,
+			geminiDir: gdir,
+			env: { GEMINI_API_KEY: "k" },
+			fetchImpl: () => Promise.reject(new Error("network must not be touched")),
+		});
 		assert.equal(status.ok, true);
 		if (!status.ok) return;
-		assert.equal(status.bin, bin);
-		assert.equal(status.binarySource, "existing");
 		assert.equal(status.auth, "gemini-api-key");
-		assert.deepEqual(status.actions, []);
 		assert.equal(status.needsLogin, false);
+		assert.deepEqual(status.actions, []);
+		assert.equal(readAuthState(gdir).type, "gemini-api-key");
 	});
 
 	test("installs from the registry when missing; oauth-personal is the default even with GEMINI_API_KEY set", async () => {
@@ -261,7 +407,10 @@ describe("acp/setup ensureAcpReady", () => {
 	test("env binary wins and skips the registry", async () => {
 		const root = tmpDir();
 		const gdir = tmpDir();
-		writeAuthType("gemini-api-key", gdir);
+		// Auth fixture is incidental here (binary resolution is the subject): keep
+		// it healthy so this test does not depend on the auth diagnosis rules.
+		writeAuthType("oauth-personal", gdir);
+		fs.writeFileSync(path.join(gdir, "acp_token.json"), "credential-not-read");
 		const bin = path.join(tmpDir(), "par");
 		fs.writeFileSync(bin, "#!/bin/sh\n");
 		fs.chmodSync(bin, 0o755);
@@ -302,6 +451,24 @@ describe("acp/setup inspectAcpSetup", () => {
 // FORMAT.md defines a `binary` distribution as "download, extract, run" with
 // optional `args` and `env`, and Google declares `--uid=` for Linux (the flag
 // that stops the server switching to a group Debian/Ubuntu does not have).
+describe("acp/setup inspectAuthDrift", () => {
+	test("reads the drifted state the server left behind", () => {
+		const gdir = tmpDir();
+		writeAuthType("gemini-api-key", gdir);
+		fs.writeFileSync(path.join(gdir, "acp_token.json"), "credential-not-read");
+
+		const d = inspectAuthDrift({ geminiDir: gdir, env: {} });
+		assert.equal(d.declared, "gemini-api-key");
+		assert.equal(d.broken, true);
+		assert.equal(d.repairable, true);
+		// The same disk state is healthy once the declared key exists.
+		assert.equal(inspectAuthDrift({ geminiDir: gdir, env: { GEMINI_API_KEY: "k" } }).broken, false);
+		// A blank or whitespace-only variable is not a usable key: the server would
+		// read it as empty, so the diagnosis must too.
+		assert.equal(inspectAuthDrift({ geminiDir: gdir, env: { GEMINI_API_KEY: "   " } }).broken, true);
+	});
+});
+
 describe("acp/setup launch definition", () => {
 	const withLaunch = (args: unknown, env?: unknown) => ({
 		id: "antigravity-acp",

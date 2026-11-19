@@ -6,14 +6,18 @@
 
 <p align="center">
   <b>Google Antigravity as a Pi model provider.</b><br>
-  Gemini 4 Argon, Gemini 3.8 Flash, Claude Sonnet 5.5 and Claude Opus 5.5 on the
-  subscription you already pay for.
+  Gemini 4 Argon, Gemini 4 Hydrogen, Gemini 3.8 Flash, Claude Sonnet 5.5 and
+  Claude Opus 5.5 on the subscription you already pay for.
 </p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@3d24rd0/pi-antigravity-bridge"><img src="https://img.shields.io/npm/v/@3d24rd0/pi-antigravity-bridge?labelColor=1A1218&color=F095C8&style=for-the-badge" alt="npm"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1A1218?labelColor=1A1218&color=D7A0B8&style=for-the-badge" alt="MIT"></a>
   <a href="https://pi.dev/packages/@3d24rd0/pi-antigravity-bridge"><img src="https://img.shields.io/badge/Pi-native-F095C8?labelColor=1A1218&style=for-the-badge" alt="Pi-native package"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Gentleman-Programming/gentle-ai"><img src="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png" height="64" alt="Built with Gentle-AI"></a>
 </p>
 
 ---
@@ -77,6 +81,7 @@ the engine; Pi's thinking toggle picks the reasoning level.
 | Model | Engine | Input | Best for |
 |---|---|---|---|
 | `antigravity/gemini-4-argon-acp` | ACP | text + image | Deep reasoning, native diff cards |
+| `antigravity/gemini-4-hydrogen-acp` | ACP | text + image | Longest-horizon reasoning; the only model reaching `xhigh` |
 | `antigravity/gemini-3-8-flash-acp` | ACP | text + image | Low latency, light quota use |
 | `antigravity/gemini-4-argon-cli` | CLI | text + image | Same model, stream-json engine |
 | `antigravity/gemini-3-8-flash-cli` | CLI | text + image | Fast execution |
@@ -144,6 +149,13 @@ Full reference, every flag and every environment variable:
 - **Read-only is enforced, never promised.** Plan mode cannot be enforced
   upstream, so the bridge refuses provider turns instead of faking it. Use
   `/agy readonly on`, Pi's tool restrictions, or the gate.
+- **Your credentials are never read.** Auth checks ask whether
+  `acp_token.json` exists (`stat`, never opened) and whether `GEMINI_API_KEY` is
+  set (a boolean, never the value). When an `agy` update rewrites `auth.type` to
+  a method this machine cannot satisfy, the bridge restores `oauth-personal` in
+  `~/.gemini/antigravity-acp/settings.json` — merging, so other keys survive —
+  and says what it did. No credential file is opened, and nothing leaves the
+  machine.
 
 Details and threat model: [docs/how-it-works.md#safety](docs/how-it-works.md#safety).
 
