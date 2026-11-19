@@ -171,7 +171,7 @@ Tab completes the surface: subcommands first, then their closed value sets.
 |---|---|
 | `/agy acp-update` | Install a newer ACP server build. The registry's declared launch `args`/`env` for that platform are recorded with the build (`launch.json`) and used for every spawn, which is how Google's Linux `--uid=` reaches the binary; the new build is started once before it becomes `current` |
 | `/agy acp-update` || `/agy doctor` | Bridge state, driver counters, CLI and server versions, signed-in plan (ACP), paths, effective config |
-| `/agy quota` | Remaining subscription quota, per model group |
+| `/agy quota` | Remaining subscription quota, per model group (also populates Gentle Shell's `/gentle:usage`) |
 | `/agy tasks [tail <id>]` | Background-task logs of this conversation (watch-only) |
 | `/agy artifacts [open <n \| name>]` | Files this conversation produced or received |
 | `/agy subagents` | Subagent roster folded from the live turn |

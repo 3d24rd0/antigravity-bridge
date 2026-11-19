@@ -114,16 +114,29 @@ export function parseAgyUsageJson(text: string): AgyQuotaReport {
 	return { groups };
 }
 
-let cachedQuotaReport: AgyQuotaReport | undefined;
+export const QUOTA_CACHE_TTL_MS = 60_000;
+
+export interface CachedQuotaEntry {
+	report: AgyQuotaReport;
+	fetchedAt: number;
+	binary?: string;
+}
+
+let cachedQuotaEntry: CachedQuotaEntry | undefined;
+const inflightQuotaFetches = new Map<string, Promise<AgyQuotaReport | undefined>>();
 
 /** Retrieve the most recently cached quota report, if available. */
 export function getLastQuotaReport(): AgyQuotaReport | undefined {
-	return cachedQuotaReport;
+	return cachedQuotaEntry?.report;
 }
 
 /** Set or clear the cached quota report (tests or manual updates). */
-export function setCachedQuotaReport(report: AgyQuotaReport | undefined): void {
-	cachedQuotaReport = report;
+export function setCachedQuotaReport(
+	report: AgyQuotaReport | undefined,
+	fetchedAt: number = Date.now(),
+	binary?: string,
+): void {
+	cachedQuotaEntry = report === undefined ? undefined : { report, fetchedAt, binary };
 }
 
 /** Build HTTP response headers from an AgyQuotaReport for options.onResponse. */
@@ -153,22 +166,57 @@ export function buildQuotaHeaders(report?: AgyQuotaReport): Record<string, strin
  *  binary, non-zero exit, timeout, cap) — same degrade-to-empty contract as
  *  the model catalog; the caller renders the difference. The spawn watchdog
  *  runs 5s past agy's own --print-timeout so the CLI's clean timeout-exit
- *  always wins the race over our SIGKILL. */
-export async function fetchAgyQuota(binary: string): Promise<AgyQuotaReport | undefined> {
-	const raw = await spawnAgyRaw(
-		binary,
-		["--print", "/usage", "--output-format", "json", "--print-timeout", `${Math.ceil(USAGE_TIMEOUT_MS / 1000)}s`],
-		USAGE_TIMEOUT_MS + 5_000,
-		USAGE_CAP_BYTES,
-	);
-	if (raw === "") return undefined;
-	try {
-		const report = parseAgyUsageJson(raw);
-		cachedQuotaReport = report;
-		return report;
-	} catch {
-		return undefined;
+ *  always wins the race over our SIGKILL. Concurrent callers for the same
+ *  binary share the active spawn instead of launching duplicate processes. */
+export async function fetchAgyQuota(binary: string, now?: number): Promise<AgyQuotaReport | undefined> {
+	const existing = inflightQuotaFetches.get(binary);
+	if (existing) return existing;
+
+	const run = (async (): Promise<AgyQuotaReport | undefined> => {
+		const raw = await spawnAgyRaw(
+			binary,
+			["--print", "/usage", "--output-format", "json", "--print-timeout", `${Math.ceil(USAGE_TIMEOUT_MS / 1000)}s`],
+			USAGE_TIMEOUT_MS + 5_000,
+			USAGE_CAP_BYTES,
+		);
+		if (raw === "") return undefined;
+		try {
+			const report = parseAgyUsageJson(raw);
+			cachedQuotaEntry = { report, fetchedAt: now ?? Date.now(), binary };
+			return report;
+		} catch {
+			return undefined;
+		}
+	})().finally(() => {
+		if (inflightQuotaFetches.get(binary) === run) {
+			inflightQuotaFetches.delete(binary);
+		}
+	});
+
+	inflightQuotaFetches.set(binary, run);
+	return run;
+}
+
+/** Serve a recent cached quota report within `maxAgeMs` for `binary`, or
+ *  fetch a fresh one (deduplicating concurrent in-flight spawns). */
+export async function getOrFetchAgyQuota(
+	binary: string,
+	options: { now?: number; maxAgeMs?: number } = {},
+): Promise<{ report: AgyQuotaReport; fetchedAt: number } | undefined> {
+	const now = options.now ?? Date.now();
+	const maxAgeMs = options.maxAgeMs ?? QUOTA_CACHE_TTL_MS;
+	if (
+		cachedQuotaEntry &&
+		cachedQuotaEntry.binary === binary &&
+		now >= cachedQuotaEntry.fetchedAt &&
+		now - cachedQuotaEntry.fetchedAt < maxAgeMs
+	) {
+		return { report: cachedQuotaEntry.report, fetchedAt: cachedQuotaEntry.fetchedAt };
 	}
+	const report = await fetchAgyQuota(binary, options.now);
+	if (!report) return undefined;
+	const fetchedAt = cachedQuotaEntry?.report === report ? cachedQuotaEntry.fetchedAt : now;
+	return { report, fetchedAt };
 }
 
 // --- rendering ---------------------------------------------------------------
@@ -194,7 +242,7 @@ export function resetLabel(resetTime: string, now: Date): string {
 	return `resets ${hhmm} on ${day} ${mon}`;
 }
 
-const WINDOW_RANK: Record<string, number> = { "5h": 0, weekly: 1 };
+export const QUOTA_WINDOW_RANK: Record<string, number> = { "5h": 0, weekly: 1 };
 
 /** Full report text: per group, 5h bucket before weekly (the window users
  *  hit first), name labeled bar with percent and reset time. `opts.plan` (the
@@ -214,7 +262,7 @@ export function formatAgyQuotaReport(
 			lines.push(`  ${group.description}`);
 		}
 		const buckets = [...group.buckets].sort(
-			(a, b) => (WINDOW_RANK[a.window] ?? 9) - (WINDOW_RANK[b.window] ?? 9),
+			(a, b) => (QUOTA_WINDOW_RANK[a.window] ?? 9) - (QUOTA_WINDOW_RANK[b.window] ?? 9),
 		);
 		for (const bucket of buckets) {
 			if (bucket.disabled) {

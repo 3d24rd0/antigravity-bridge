@@ -176,7 +176,9 @@ is older than 1.5.0.
 
 **How do I see what quota is left?** `/agy quota`. Other Antigravity bridges
 call it `/antigravity:usage`; here every engine-level question lives under the
-one `/agy` command, so there is no second name to remember.
+one `/agy` command, so there is no second name to remember. In Gentle Shell,
+Antigravity quota also populates `/gentle:usage` and the status bar automatically
+when the `agy` CLI is installed.
 
 **Can different providers use different accounts?** Yes. Logins are per
 provider: Codex can run on one email while Gemini runs on another, and neither
