@@ -71,6 +71,16 @@ export function detectAuthEnvironment(
 	return { hasGui, remote, hasOpener, platform, user, host };
 }
 
+/** The one-shot callback listener closes the moment it receives the redirect,
+ *  which is what the browser shows as a dead page. Stated once, in both modes,
+ *  because the alternative is a user concluding the sign-in failed and starting
+ *  over while the command has already succeeded. */
+const POST_CALLBACK_NOTE = [
+	"After you approve, the browser may show an empty page or a connection reset error:",
+	"the one-shot callback listener closes as soon as it receives the redirect, so that",
+	"page is not the outcome. The Pi command result here is definitive.",
+];
+
 /** What is about to happen, in order, before the blocking sign-in starts. Lines
  *  are user-facing and state the wait budget so nobody sits guessing. */
 export function authStepGuide(mode: AuthMode, env: AuthEnvironment): string[] {
@@ -80,6 +90,7 @@ export function authStepGuide(mode: AuthMode, env: AuthEnvironment): string[] {
 		lines.push("  1. Your browser opens the Google sign-in page.");
 		lines.push("  2. You finish it there; this command waits up to 10 minutes.");
 		lines.push("  3. If no browser opens, the URL appears here with a copy-paste fallback.");
+		lines.push("", ...POST_CALLBACK_NOTE);
 		return lines;
 	}
 	lines.push("Signing in from a terminal without a browser. What happens:");
@@ -88,8 +99,8 @@ export function authStepGuide(mode: AuthMode, env: AuthEnvironment): string[] {
 	lines.push("  3. Before the browser finishes, run the ssh tunnel command printed next to the URL.");
 	lines.push(`     (it forwards the loopback port back to ${env.host}; this command waits up to 10 minutes)`);
 	lines.push("  4. Come back here: the sign-in completes on its own when the redirect lands.");
-	lines.push("");
-	lines.push(`Lost the URL? It is also saved in ${AUTH_URL_FILE_HINT}`);
+	lines.push("", ...POST_CALLBACK_NOTE);
+	lines.push("", `Lost the URL? It is also saved in ${AUTH_URL_FILE_HINT}`);
 	return lines;
 }
 
@@ -114,7 +125,7 @@ export function authFailureHint(error: string): string {
 	const e = error.toLowerCase();
 	if (e.includes("already running")) return "A sign-in is already in progress. Finish it in the browser, then retry.";
 	if (e.includes("timed out") || e.includes("timeout")) {
-		return "The browser step never completed. Run /agy auth-url to reopen the link, and make sure the ssh tunnel is up before the page redirects.";
+		return `The browser step never completed. Run /agy auth again (or check ${AUTH_URL_FILE_HINT}), and make sure the ssh tunnel is up before the page redirects.`;
 	}
 	if (e.includes("no usable credentials")) {
 		return "The server accepted the sign-in but kept no usable credentials. Finish the Google page if it is still open, then run /agy auth again.";

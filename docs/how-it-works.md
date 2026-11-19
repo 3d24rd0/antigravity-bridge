@@ -291,3 +291,34 @@ Defaults, stated plainly:
 | "MCP tool bridge disabled" | The server could not bind; `/agy doctor` shows the reason |
 | A tool call answers "STILL RUNNING" | It escalated to a poll handle; the result arrives via `bridge_poll_result` |
 | Anything odd | `AGY_DEBUG=1 pi`, reproduce, then read `~/.pi/agent/antigravity-bridge/logs/<today>.ndjson` |
+
+### Remote / SSH sign-in
+
+Google redirects the ACP sign-in to a loopback port on the machine running the
+bridge, which a browser elsewhere cannot reach on its own. The route that works:
+
+1. Run `/agy auth` on the remote machine. It prints Google's sign-in URL and
+   saves a copy in `~/.pi/agent/antigravity-bridge/acp-auth-urls.log`, because
+   the notice scrolls away while the command blocks.
+2. Forward that loopback port from the machine with the browser, in a second
+   terminal, **before** the page redirects:
+
+   ```bash
+   ssh -N -L <port>:127.0.0.1:<port> <user>@<host>
+   ```
+
+   The exact command, with the real port, user and host, is printed next to the
+   URL; nothing has to be filled in by hand.
+3. Approve in Google. The browser may finish on an empty page, or on a
+   "connection reset"/"connection closed" error — that is normal: the one-shot
+   callback listener closes the moment it receives the redirect. The page is not
+   the outcome; the `/agy auth` result in the remote terminal is.
+
+If the sign-in times out, rerun `/agy auth` (the URL in the log file may carry
+one-time state that has already been spent) and make sure the tunnel is up
+before the redirect lands.
+
+Do **not** try to check the server with `agy_acp_server --version` or
+`agy_acp_server --help`: it is a stdio JSON-RPC server, so it answers nothing
+outside a handshake and simply hangs or exits. `/agy doctor` reports the
+installed version.

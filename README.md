@@ -163,10 +163,32 @@ Details and threat model: [docs/how-it-works.md#safety](docs/how-it-works.md#saf
 
 | | |
 |---|---|
-| **Pi** | Tested against 1.0+; peers are declared `*` (`pi-coding-agent`, `pi-tui`, `pi-ai`, `typebox`) |
+| **Pi** | **1.5.0+** — the version this bridge is tested against; peers are declared `*` (`pi-coding-agent`, `pi-tui`, `pi-ai`, `typebox`) |
 | **Node** | ≥ 22 |
 | **Antigravity CLI** | `agy`, signed in once (required by the CLI engine and by `AskAntigravity`) |
 | **Google account** | with Antigravity access; ACP additionally asks its own sign-in |
+
+Gentle Shell bundles its own Pi. If `/model` shows no `antigravity/` models
+after installing, check which Pi it runs and `gentle-shell upgrade` when that Pi
+is older than 1.5.0.
+
+## FAQ
+
+**How do I see what quota is left?** `/agy quota`. Other Antigravity bridges
+call it `/antigravity:usage`; here every engine-level question lives under the
+one `/agy` command, so there is no second name to remember.
+
+**Can different providers use different accounts?** Yes. Logins are per
+provider: Codex can run on one email while Gemini runs on another, and neither
+login disturbs the other. `agy` itself is the exception — it holds one active
+Google account at a time, so switching it changes the account behind every
+`antigravity/*` model.
+
+**Can I install a second Antigravity bridge?** No. Packages such as
+`pi-antigravity`, `@cortexkit/pi-antigravity-auth` or
+`@estebanforge/pi-antigravity-bridge` register the same commands, the same
+`antigravity/` provider and the same `~/.gemini/antigravity-*` auth paths, so
+they collide with this bridge. Keep exactly one installed.
 
 ## Development
 
