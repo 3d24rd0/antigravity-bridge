@@ -21,15 +21,31 @@ afterEach(() => {
 	resetSyspromptAgentForTests();
 });
 
-test("agent.md keeps agy defaults except the declared subagent masking", () => {
+test("agent.md keeps agy defaults except the declared toolset and subagent masking", () => {
 	const md = syspromptAgentMd("pi-bridge-sys-x", "BODY");
 	assert.match(md, /^---\nname: pi-bridge-sys-x\n/);
-	// The carrier must NOT strip agy's defaults: provider sessions need the
-	// normal toolset and the bridge MCP config for G9 round-trips.
+	// The carrier must NOT strip agy's defaults or MCP config: provider
+	// sessions need the bridge MCP config for G9 round-trips.
 	assert.equal(md.includes("excludeDefaultComponents"), false);
 	assert.equal(md.includes("inheritMcp"), false);
-	assert.equal(md.includes("tools:"), false);
 	assert.ok(md.endsWith("BODY\n"));
+});
+
+test("carrier declares the productive toolset explicitly in block style", () => {
+	// Omitting tools: is not "all tools" — agy grants only a small read-only
+	// default set, stripping write_file/edit_file/run_command from stream-json
+	// carrier sessions. agy appends resource/MCP tools itself.
+	const md = syspromptAgentMd("pi-bridge-sys-x", "BODY");
+	assert.match(md, /\ntools:\n  - read_file\n/);
+	const fm = parseAgentFrontmatter(md);
+	assert.deepEqual(fm.tools, [
+		"read_file",
+		"edit_file",
+		"write_file",
+		"run_command",
+		"manage_task",
+		"search_web",
+	]);
 });
 
 test("frontmatter parses as YAML (agy drops unparsable agents, issue #5)", () => {
