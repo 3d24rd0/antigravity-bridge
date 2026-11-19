@@ -159,6 +159,40 @@ test("formatAgyQuotaReport: 5h before weekly, percent and reset rendered", () =>
 	assert.match(out, /90%/);
 });
 
+test("formatAgyQuotaReport: the plan summary sits under the header and keeps groups intact", () => {
+	const report = parseAgyUsageJson(REAL_PAYLOAD);
+	const now = new Date(2026, 8, 24, 15, 0);
+	const out = formatAgyQuotaReport(report, now, { plan: "Google AI Pro" });
+	const lines = out.split("\n");
+	assert.equal(lines[0], "Antigravity quota (account-level, both engines)");
+	assert.equal(lines[1], "  Plan: Google AI Pro");
+	// The plan line is indented on purpose: the group-heading filter that the
+	// 5h-before-weekly check relies on must still see only real group names.
+	assert.deepEqual(lines.filter((l) => l && !l.startsWith(" ")), [
+		"Antigravity quota (account-level, both engines)",
+		"Gemini Models",
+		"Claude and GPT models",
+	]);
+	// Everything below the plan line is byte-identical to the plain report.
+	assert.equal(out.replace("  Plan: Google AI Pro\n", ""), formatAgyQuotaReport(report, now));
+});
+
+test("formatAgyQuotaReport: fallback plan strings render verbatim", () => {
+	const report = parseAgyUsageJson(REAL_PAYLOAD);
+	const now = new Date(2026, 8, 24, 15, 0);
+	const out = formatAgyQuotaReport(report, now, { plan: "reported only by the ACP engine" });
+	assert.equal(out.split("\n")[1], "  Plan: reported only by the ACP engine");
+});
+
+test("formatAgyQuotaReport: no plan option keeps the previous output", () => {
+	const report = parseAgyUsageJson(REAL_PAYLOAD);
+	const now = new Date(2026, 8, 24, 15, 0);
+	const plain = formatAgyQuotaReport(report, now);
+	assert.ok(!plain.includes("Plan:"));
+	assert.equal(formatAgyQuotaReport(report, now, {}), plain);
+	assert.equal(formatAgyQuotaReport(report, now, { plan: "" }), plain);
+});
+
 test("formatAgyQuotaReport: renders group descriptions and disabled bucket notices", () => {
 	const report = parseAgyUsageJson(REAL_PAYLOAD);
 	report.groups[1].description = "Models within this group: Claude Opus, Claude Sonnet";

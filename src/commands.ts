@@ -44,6 +44,11 @@ import { checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_VERSION } from "./
 import { isValidAgyAgentName, listAgyAgents } from "./agents.js";
 import { formatSubagentRoster, type SubagentRoster } from "./subagent-roster.js";
 import { fetchAgyQuota, formatAgyQuotaReport } from "./usage.js";
+import {
+	detectConflictingAntigravityBridges,
+	formatBridgeConflictWarning,
+	summarizeBridgeConflicts,
+} from "./bridge-conflicts.js";
 import { planSummary } from "./acp/tier.js";
 import { checkAcpUpdate, isManagedBinary, updateAcp } from "./acp/update.js";
 import { artifactOpenCommand, listAgyArtifacts } from "./artifacts.js";
@@ -531,6 +536,14 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					cliCheck.status === "unavailable" && engine === "acp"
 						? " (optional here; AskAntigravity delegations use the CLI)"
 						: "";
+				// Another Antigravity bridge/auth package in the same settings makes
+				// turns land on whichever extension loads last; name it here, where
+				// the user already reads binary/auth health.
+				const bridgeConflicts = detectConflictingAntigravityBridges();
+				const conflictDetail =
+					bridgeConflicts.length === 0
+						? "none"
+						: `WARNING — ${summarizeBridgeConflicts(bridgeConflicts)} (keep only @3d24rd0/pi-antigravity-bridge)`;
 				const lines = [
 					"Antigravity doctor (no tokens spent)",
 					`  engine:        ${engine}`,
@@ -541,6 +554,7 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					`  models:        ${ctx.entries.length} ${ctx.usingFallback ? "FALLBACK (agy models failed)" : "discovered"}`,
 					`  agy cli:       ${describeAgyVersionCheck(cliCheck)} (min ${MIN_AGY_VERSION})${cliSuffix}`,
 					`  plan:          ${planSummary(snap.acp?.planTier, engine)}`,
+					`  conflicts:     ${conflictDetail}`,
 					`  config:        ${CONFIG_PATH}`,
 					`  logs:          ${logsDir()} (attach recent days' files when reporting issues; set AGY_DEBUG=1 to capture details)`,
 				];
@@ -578,7 +592,11 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				// The config surface lives here too, so doctor is the ONE status
 				// surface (former /agy status is gone).
 				lines.push("", "settings:", ...settingsRows(ctx));
-				ui?.notify(lines.join("\n"), "info");
+				ui?.notify(lines.join("\n"), bridgeConflicts.length > 0 ? "warning" : "info");
+				// A single blocked line would truncate the package/file list, so the
+				// remediation block goes second when there is something to fix.
+				const conflictWarning = formatBridgeConflictWarning(bridgeConflicts);
+				if (conflictWarning !== undefined) ui?.notify(conflictWarning, "warning");
 				return;
 			}
 			if (sub === "mode") {
@@ -795,7 +813,8 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						ui?.notify("quota unavailable: agy did not return a /usage payload (see /agy doctor for binary health).", "warning");
 						return;
 					}
-					ui?.notify(formatAgyQuotaReport(report), "info");
+					const plan = planSummary(ctx.acpDriver.snapshot().acp?.planTier, ctx.engine);
+					ui?.notify(formatAgyQuotaReport(report, new Date(), { plan }), "info");
 				} finally {
 					ui?.setStatus("agy-quota", undefined);
 				}
