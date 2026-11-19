@@ -98,7 +98,10 @@ export function authStepGuide(mode: AuthMode, env: AuthEnvironment): string[] {
 	lines.push("  2. Copy that URL and paste it into a browser on a machine you can see.");
 	lines.push("  3. Before the browser finishes, run the ssh tunnel command printed next to the URL.");
 	lines.push(`     (it forwards the loopback port back to ${env.host}; this command waits up to 10 minutes)`);
-	lines.push("  4. Come back here: the sign-in completes on its own when the redirect lands.");
+	lines.push("  4. No ssh tunnel? Leave it out: when the browser shows its final redirect URL instead of a");
+	lines.push("     page, paste the browser's final redirect URL back here and this command forwards that");
+	lines.push("     one request to the local listener itself (loopback address, same port, nothing else).");
+	lines.push("  5. Come back here: the sign-in completes on its own when the redirect lands.");
 	lines.push("", ...POST_CALLBACK_NOTE);
 	lines.push("", `Lost the URL? It is also saved in ${AUTH_URL_FILE_HINT}`);
 	return lines;

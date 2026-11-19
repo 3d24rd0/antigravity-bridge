@@ -51,6 +51,20 @@ test("authStepGuide: the tunnel route says what to do, in order, with the wait b
 	assert.match(lines, /buildbox/);
 });
 
+test("authStepGuide: the tunnel route offers the pasted-callback fallback, so no ssh tunnel is strictly required", () => {
+	const lines = authStepGuide("tunnel", env()).join("\n");
+	assert.match(lines, /No ssh tunnel/);
+	assert.match(lines, /paste the browser's final redirect URL/);
+	// The tunnel stays the first suggestion; the fallback is an addition.
+	assert.match(lines, /ssh tunnel command/);
+});
+
+test("authStepGuide: the browser route does not mention the pasted-callback fallback", () => {
+	const lines = authStepGuide("browser", env({ hasGui: true })).join("\n");
+	assert.doesNotMatch(lines, /redirect URL/);
+	assert.doesNotMatch(lines, /No ssh tunnel/);
+});
+
 test("authStepGuide: the browser route does not mention tunnels", () => {
 	const lines = authStepGuide("browser", env({ hasGui: true })).join("\n");
 	assert.match(lines, /browser opens/);
