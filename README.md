@@ -184,12 +184,6 @@ login disturbs the other. `agy` itself is the exception — it holds one active
 Google account at a time, so switching it changes the account behind every
 `antigravity/*` model.
 
-**Can I install a second Antigravity bridge?** No. Packages such as
-`pi-antigravity`, `@cortexkit/pi-antigravity-auth` or
-`@estebanforge/pi-antigravity-bridge` register the same commands, the same
-`antigravity/` provider and the same `~/.gemini/antigravity-*` auth paths, so
-they collide with this bridge. Keep exactly one installed.
-
 ## Development
 
 ```bash
