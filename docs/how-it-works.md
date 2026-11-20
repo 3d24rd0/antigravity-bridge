@@ -132,6 +132,11 @@ Pi and `agy` both keep conversations; the bridge keeps them in step.
 | Model switch | A conversation is bound to the model that created it, so switching rotates the binding |
 | Failed turns | The watermark only advances on a clean, non-aborted turn |
 
+Both engines report the complete upstream individual-quota notice as a rate-limit
+error rather than a successful turn, without advancing the context watermark.
+An upper layer may retry or try a fallback; the same account may remain exhausted,
+so neither retry nor model fallback is guaranteed to help.
+
 ## `/agy` reference
 
 Bare `/agy` opens the interactive settings menu (stage changes, save on close).
