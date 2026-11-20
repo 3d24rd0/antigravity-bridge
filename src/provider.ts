@@ -44,6 +44,7 @@ import { TurnDiffContext, createExecGitOps, formatInlineDiff, parseEditToolInput
 import { stageSyspromptAgent } from "./sysprompt-agent.js";
 import { estimateTranscriptTokens } from "./acp/usage-estimate.js";
 import { buildQuotaHeaders, getLastQuotaReport } from "./usage.js";
+import { quotaNoticeError } from "./quota-notice.js";
 
 const DEFAULT_TIMEOUT_MIN = 10;
 
@@ -811,10 +812,12 @@ async function runTurnDriver(
 		contextInputTokens,
 	};
 
+	let textOnly = !isContinuation;
 	const drainTurn = async (h: TurnHandle): Promise<"parked" | undefined> => {
 		for (;;) {
 			const activity = await h.next();
 			if (!activity) break;
+			if (activity.type !== "text" && activity.type !== "usage") textOnly = false;
 			if (consumeActivity(stream, blocks, activity, diffCtx, cwd, feats) === "parked") return "parked";
 		}
 	};
@@ -933,6 +936,14 @@ async function runTurnDriver(
 			}
 		}
 	}
+	const streamedText = partial.content
+		.filter((b): b is { type: "text"; text: string } => b.type === "text")
+		.map((b) => b.text).join("");
+	// Only reconcile a result that extends the visible stream; divergent text
+	// would otherwise misclassify an ordinary answer containing the notice.
+	const settledText = !outcome.response ? streamedText : outcome.response.startsWith(streamedText) ? outcome.response : "";
+	const quotaError = outcome.status === "OK" && !outcome.aborted && textOnly
+		? quotaNoticeError(settledText) : undefined;
 	if (outcome.conversationId && !isEphemeral) {
 		// A different id than the stored one means the driver recreated the
 		// conversation under us (ACP session-load fallback, stream-json CLI
@@ -945,7 +956,7 @@ async function runTurnDriver(
 		if (existing?.conversationId && outcome.conversationId !== existing.conversationId) {
 			store.delete(key);
 			stagedAgentByConversation.delete(existing.conversationId);
-		} else if (outcome.status === "OK" && !outcome.aborted) {
+		} else if (outcome.status === "OK" && !outcome.aborted && !quotaError) {
 			store.set(key, {
 				conversationId: outcome.conversationId,
 				lastStepIdx: -1,
@@ -966,6 +977,10 @@ async function runTurnDriver(
 	}
 	if (outcome.status === "ERROR") {
 		finalize(stream, blocks, "error", outcome.error ?? "agy turn failed");
+		return;
+	}
+	if (quotaError) {
+		finalize(stream, blocks, "error", quotaError);
 		return;
 	}
 	// A parked-turn recovery settles OK with the full answer in outcome.response
