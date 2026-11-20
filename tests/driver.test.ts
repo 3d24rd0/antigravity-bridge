@@ -4,6 +4,8 @@
 // deliberately split across two stdout writes mid-line.
 
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, test } from "vitest";
 import { StreamDriver } from "../src/driver.js";
@@ -407,5 +409,79 @@ describe("stream-json driver: parked time and the turn cap", () => {
 		assert.equal(outcome.status, "ERROR");
 		assert.match(outcome.error ?? "", /turn timeout/);
 		await driver.close("shutdown");
+	});
+});
+
+describe("stream-json driver: binary resolution (AGY_BIN)", () => {
+	test("spawns AGY_BIN instead of PATH agy when set", async () => {
+		const prevPath = process.env.PATH;
+		const prevBin = process.env.AGY_BIN;
+		const tmpDir = mkdtempSync(path.join(os.tmpdir(), "driver-agy-bin-"));
+		const customBin = path.join(tmpDir, "custom-agy");
+		writeFileSync(
+			customBin,
+			[
+				"#!/usr/bin/env bash",
+				"read -r _line",
+				"printf '%s\\n' '{\"event\":\"init\",\"init\":{\"conversation_id\":\"conv-custom-bin\"}}'",
+				"printf '%s\\n' '{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\",\"response\":\"CUSTOM-AGY-BIN\",\"conversation_id\":\"conv-custom-bin\"}}'",
+			].join("\n"),
+			"utf8",
+		);
+		chmodSync(customBin, 0o755);
+
+		process.env.PATH = `${FAKE_BIN_DIR}:${prevPath ?? ""}`;
+		process.env.AGY_BIN = customBin;
+		const driver = new StreamDriver();
+		try {
+			const handle = await driver.run({
+				prompt: "hi",
+				cwd: process.cwd(),
+				model: "gemini-3.8-flash",
+				mode: "accept-edits",
+				skipPermissions: true,
+				timeoutMin: 0.5,
+				inactivityMin: 0.5,
+			});
+			const outcome = await handle.outcome;
+			assert.equal(outcome.status, "OK");
+			assert.equal(outcome.conversationId, "conv-custom-bin");
+			assert.equal(outcome.response, "CUSTOM-AGY-BIN");
+		} finally {
+			await driver.close("shutdown");
+			if (prevBin === undefined) delete process.env.AGY_BIN;
+			else process.env.AGY_BIN = prevBin;
+			if (prevPath === undefined) delete process.env.PATH;
+			else process.env.PATH = prevPath;
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	test("falls back to PATH agy when AGY_BIN is empty", async () => {
+		const prevPath = process.env.PATH;
+		const prevBin = process.env.AGY_BIN;
+		process.env.PATH = `${FAKE_BIN_DIR}:${prevPath ?? ""}`;
+		process.env.AGY_BIN = "";
+		const driver = new StreamDriver();
+		try {
+			const handle = await driver.run({
+				prompt: "hi",
+				cwd: process.cwd(),
+				model: "gemini-3.8-flash",
+				mode: "accept-edits",
+				skipPermissions: true,
+				timeoutMin: 0.5,
+				inactivityMin: 0.5,
+			});
+			const outcome = await handle.outcome;
+			assert.equal(outcome.status, "OK");
+			assert.equal(outcome.response, "HALF-ONE-HALF-TWO");
+		} finally {
+			await driver.close("shutdown");
+			if (prevBin === undefined) delete process.env.AGY_BIN;
+			else process.env.AGY_BIN = prevBin;
+			if (prevPath === undefined) delete process.env.PATH;
+			else process.env.PATH = prevPath;
+		}
 	});
 });

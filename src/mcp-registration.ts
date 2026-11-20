@@ -10,7 +10,8 @@
 //
 // The ACP engine does not use this file (mcpServers ride session/new).
 //
-// Merge rules: foreign servers are preserved; corrupt JSON is refused (the
+// Merge rules: empty files are treated as fresh config; a leading UTF-8 BOM
+// is accepted; foreign servers are preserved; corrupt JSON is refused (the
 // file is shared user config - never clobber); writes are atomic.
 //
 // Run: npm test
@@ -39,7 +40,8 @@ type McpConfig = { mcpServers: Record<string, unknown> };
 function readConfig(file: string): { ok: true; config: McpConfig } | { ok: false; reason: string } {
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+		const text = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "");
+		parsed = text.trim() === "" ? { mcpServers: {} } : JSON.parse(text);
 	} catch (err) {
 		const code = (err as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") return { ok: true, config: { mcpServers: {} } };
