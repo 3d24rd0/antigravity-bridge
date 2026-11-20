@@ -81,6 +81,7 @@ export async function showArtifactsBrowser(
 		};
 	}, {
 		overlay: true,
+		blocked: { kind: "question", message: "Choose an Antigravity artifact" },
 		overlayOptions: { anchor: "center" as const, width: 84, maxHeight: "85%" as const, margin: 1 },
 	});
 }

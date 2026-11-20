@@ -31,14 +31,17 @@ function fakeUi<T>(result: T) {
 	let resolveDone!: (value: T) => void;
 	const settled = new Promise<T>((resolve) => (resolveDone = resolve));
 	let component: Component | undefined;
+	let options: { blocked?: unknown } | undefined;
 	const ui = {
-		custom: (factory: (t: TUI, th: Theme, kb: unknown, done: (value: T) => void) => Component) => {
+		custom: (factory: (t: TUI, th: Theme, kb: unknown, done: (value: T) => void) => Component, customOptions: { blocked?: unknown }) => {
+			options = customOptions;
 			component = factory(tui, theme, {}, (value: T) => resolveDone(value));
 			return settled;
 		},
 	} as unknown as ExtensionUIContext;
 	return {
 		ui,
+		blocked: () => options?.blocked,
 		render: (width = 90): string => {
 			assert.ok(component, "the surface must build a component synchronously");
 			return component.render(width).join("\n");
@@ -78,6 +81,7 @@ test("settings menu: frame carries title, subtitle, rows and footer", async () =
 		rows,
 		onChange: (id, value) => seen.push([id, value]),
 	});
+	assert.deepEqual(fake.blocked(), { kind: "question", message: "Antigravity provider settings" });
 	const text = fake.render(90);
 	assert.match(text, /Antigravity provider/);
 	assert.match(text, /Config file: \/tmp\/agy\.json/);
@@ -133,6 +137,7 @@ test("choice menu: frame carries title, intro and options; cancel resolves undef
 			{ value: "stream-json", label: "Stream-JSON CLI", description: "fallback" },
 		],
 	});
+	assert.deepEqual(fake.blocked(), { kind: "question", message: "Antigravity Bridge: choose your engine" });
 	const text = fake.render(90);
 	assert.match(text, /choose your engine/);
 	assert.match(text, /Pick the engine that runs your turns\./);

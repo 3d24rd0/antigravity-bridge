@@ -77,13 +77,16 @@ test("picker: saved-engine toast names the download-now and sign-in promise", ()
 test("picker: showEnginePicker resolves the picked engine, undefined on esc", async () => {
 	// Captured ui.custom fake: hand the view the keys SelectList answers to.
 	// ExtensionUIContext is structural here; only custom() is exercised.
-	const capture = (): { ui: unknown; view: () => { handleInput(data: string): void } } => {
+	const capture = (): { ui: unknown; view: () => { handleInput(data: string): void }; blocked: () => unknown } => {
 		let captured: { handleInput(data: string): void } | undefined;
+		let options: { blocked?: unknown } | undefined;
 		const ui = {
 			custom: (
 				factory: (host: unknown, theme: unknown, keys: unknown, done: (v: unknown) => void) => unknown,
+				customOptions: { blocked?: unknown },
 			) =>
 				new Promise<unknown>((resolve) => {
+					options = customOptions;
 					const done = (value: unknown) => resolve(value);
 					const host = { requestRender() {}, terminal: { rows: 24 } };
 					captured = factory(host, { fg: (_c: string, t: string) => t }, undefined, done) as {
@@ -91,18 +94,20 @@ test("picker: showEnginePicker resolves the picked engine, undefined on esc", as
 					};
 				}),
 		};
-		return { ui, view: () => captured! };
+		return { ui, view: () => captured!, blocked: () => options?.blocked };
 	};
 
 	const enter = capture();
 	const enterPick = showEnginePicker(enter.ui as never);
 	await Promise.resolve();
+	assert.deepEqual(enter.blocked(), { kind: "question", message: "Antigravity Bridge: choose your engine" });
 	enter.view().handleInput("\r");
 	assert.equal(await enterPick, "acp"); // first item, the default engine
 
 	const esc = capture();
 	const escPick = showEnginePicker(esc.ui as never);
 	await Promise.resolve();
+	assert.deepEqual(esc.blocked(), { kind: "question", message: "Antigravity Bridge: choose your engine" });
 	esc.view().handleInput("\x1b");
 	assert.equal(await escPick, undefined);
 });
