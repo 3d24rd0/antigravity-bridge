@@ -6,9 +6,87 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test, describe } from "vitest";
+import { fileURLToPath } from "node:url";
+import { test, describe, vi } from "vitest";
 import { AcpConnection, setAuthInvalidatedHook, translateError } from "../src/acp/connection.js";
 import { JsonRpcResponseError } from "../src/acp/jsonrpc.js";
+
+test.each([0, 7])("native exit code %i reaches the callback once", async (code) => {
+	const exits: Array<{ code: number | null; signal: string | null; stderrTail: string }> = [];
+	const conn = new AcpConnection({ cwd: os.tmpdir(), bin: process.execPath,
+		binArgs: ["-e", `setTimeout(() => process.exit(${code}), 50)`],
+		log: () => {}, onUpdate: () => {}, onExit: (info) => exits.push(info) });
+	await assert.rejects(conn.start());
+	assert.deepEqual(exits, [{ code, signal: null, stderrTail: "" }]);
+});
+
+test.skipIf(process.platform === "win32")("native signal reaches the callback once", async () => {
+	const exits: Array<{ code: number | null; signal: string | null; stderrTail: string }> = [];
+	const conn = new AcpConnection({ cwd: os.tmpdir(), bin: process.execPath,
+		binArgs: ["-e", "setTimeout(() => process.kill(process.pid, 'SIGTERM'), 50)"],
+		log: () => {}, onUpdate: () => {}, onExit: (info) => exits.push(info) });
+	await assert.rejects(conn.start());
+	assert.deepEqual(exits, [{ code: null, signal: "SIGTERM", stderrTail: "" }]);
+});
+
+test("session operation timeouts give actionable guidance", async () => {
+	const conn = new AcpConnection({ cwd: os.tmpdir(), bin: process.execPath,
+		binArgs: ["-e", `process.stdin.on('data', d => { for (const line of String(d).trim().split('\\n')) { const m = JSON.parse(line); if (m.method === 'initialize') console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{}})); } });`],
+		log: () => {}, onUpdate: () => {}, onExit: () => {} });
+	await conn.start();
+	try {
+		vi.useFakeTimers();
+		for (const method of ["session/new", "session/load"]) {
+			const pending = method === "session/new" ? conn.newSession(os.tmpdir()) : conn.loadSession("s", os.tmpdir());
+			const rejection = pending.then(() => null, (err: Error) => err);
+			await vi.advanceTimersByTimeAsync(20_000);
+			assert.equal((await rejection)?.message, `ACP ${method} timed out after 20000ms; the server may still be processing the request. Run /agy doctor to inspect the connection.`);
+			assert.equal(conn.alive, true);
+		}
+		const generic = conn.request("other/method", {}, 20_000).then(() => null, (err: Error) => err);
+		await vi.advanceTimersByTimeAsync(20_000);
+		assert.equal((await generic)?.message, "ACP request timed out after 20000ms: other/method");
+	} finally { vi.useRealTimers(); conn.kill(); }
+});
+
+test("non-timeout session errors retain identity", async () => {
+	const conn = new AcpConnection({ cwd: os.tmpdir(), bin: process.execPath, log: () => {}, onUpdate: () => {}, onExit: () => {} });
+	const failure = new Error("unrelated failure");
+	const request = vi.spyOn(conn, "request").mockRejectedValue(failure);
+	try {
+		await assert.rejects(conn.newSession(os.tmpdir()), (err) => err === failure);
+		await assert.rejects(conn.loadSession("s", os.tmpdir()), (err) => err === failure);
+	} finally { request.mockRestore(); }
+});
+
+test("late load response is ignored and updates resume after timeout", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-late-"));
+	const logPath = path.join(dir, "requests.jsonl");
+	const updates: unknown[] = [];
+	let replaySeen = false;
+	const conn = new AcpConnection({ cwd: dir, bin: process.execPath,
+		binArgs: [fileURLToPath(new URL("./helpers/fake-acp-server.mjs", import.meta.url))],
+		extraEnv: { ACP_FAKE_SCENARIO: "load-timeout", ACP_FAKE_LOG: logPath },
+		log: (msg, data) => { if (msg === "notification" && (data as { method?: string }).method === "replay-complete") replaySeen = true; },
+		onUpdate: (_id, update) => updates.push(update), onExit: () => {} });
+	const realSetTimeout = setTimeout;
+	try {
+		await conn.start();
+		vi.useFakeTimers();
+		const load = conn.loadSession("old", dir).then(() => null, (err: Error) => err);
+		for (let i = 0; i < 500 && !replaySeen; i++) {
+			await new Promise<void>((resolve) => realSetTimeout(resolve, 10));
+		}
+		assert.equal(replaySeen, true);
+		assert.deepEqual(updates, []);
+		await vi.advanceTimersByTimeAsync(20_000);
+		assert.equal((await load)?.message, "ACP session/load timed out after 20000ms; the server may still be processing the request. Run /agy doctor to inspect the connection.");
+		vi.useRealTimers();
+		assert.deepEqual(await conn.newSession(dir), { sessionId: "fake-session-0001" });
+		assert.deepEqual(updates, [{ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "LIVE AFTER TIMEOUT" } }]);
+		assert.deepEqual(conn.lastConfigOptions, []);
+	} finally { vi.useRealTimers(); conn.kill(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
 
 test("acp connection: stderr tail and exit info are redacted", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-conn-"));
@@ -93,6 +171,7 @@ test("acp connection: a stdout frame flood kills the connection instead of growi
 	}
 	assert.match((rejection as Error)?.message ?? "", /frame overflow/i);
 	assert.ok(exits.length > 0, "exit fired");
+	assert.deepEqual(exits[0], { code: null, signal: null, stderrTail: "" });
 	fs.rmSync(dir, { recursive: true, force: true });
 }, 30_000);
 
