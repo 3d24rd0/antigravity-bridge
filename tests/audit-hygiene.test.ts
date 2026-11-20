@@ -2,7 +2,7 @@
 //
 // S8: duplicate permission option labels stay distinguishable.
 // S9: settled approval tickets nobody polls are swept after a TTL.
-// S10: a Windows install is found through PATHEXT; POSIX behavior unchanged.
+// S10: Windows detection matches shell-free .exe spawning; POSIX stays extensionless.
 //
 // Run: npm test
 
@@ -72,25 +72,56 @@ test("S9 only settled parks older than the TTL are swept", () => {
 	assert.deepEqual([...parks.keys()].sort(), ["pending", "settled-new"]);
 });
 
-test("S10 a .cmd install is found on Windows through PATHEXT", () => {
+test.each(["cmd", "bat", "CMD", "BAT", "com"])("S10 Windows rejects .%s shims, including explicit paths", (ext) => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-win-"));
-	fs.writeFileSync(path.join(dir, "agy.cmd"), "@echo off\n");
-
-	assert.equal(isAgyInstalled("agy", { PATH: dir, PATHEXT: ".EXE;.CMD" }, "win32"), true);
-	assert.equal(isAgyInstalled("agy", { PATH: dir, PATHEXT: ".EXE" }, "win32"), false);
-	// POSIX never guesses extensions: an extensionless binary must exist as-is.
-	assert.equal(isAgyInstalled("agy", { PATH: dir }, "darwin"), false);
-	// An explicit path keeps working on every platform.
-	assert.equal(isAgyInstalled(path.join(dir, "agy.cmd"), {}, "darwin"), true);
+	try {
+		const name = `agy.${ext}`;
+		const file = path.join(dir, name);
+		fs.writeFileSync(file, "@echo off\n");
+		const env = { PATH: dir, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+		assert.equal(isAgyInstalled("agy", env, "win32"), false);
+		assert.equal(isAgyInstalled(name, env, "win32"), false);
+		assert.equal(isAgyInstalled(file, env, "win32"), false);
+		assert.equal(isAgyInstalled("agy", env, "darwin"), false);
+		assert.equal(isAgyInstalled(file, env, "darwin"), true);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });
 
-test("S10b a dotted Windows name still tries PATHEXT", () => {
+test.each(["exe", "EXE"])("S10b Windows finds dotted names and explicit .%s without relying on PATHEXT", (ext) => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-win-dot-"));
-	fs.writeFileSync(path.join(dir, "agy.v2.cmd"), "@echo off\n");
-	// A dot in the bare name is not proof of an explicit extension: only a
-	// PATHEXT suffix is.
-	assert.equal(isAgyInstalled("agy.v2", { PATH: dir, PATHEXT: ".EXE;.CMD" }, "win32"), true);
+	try {
+		fs.writeFileSync(path.join(dir, `agy.v2.${ext}`), "");
+		const env = { PATH: dir, PATHEXT: ".BAT;.CMD" };
+		assert.equal(isAgyInstalled("agy.v2", env, "win32"), true);
+		const file = path.join(dir, `agy.${ext}`);
+		fs.writeFileSync(file, "");
+		assert.equal(isAgyInstalled("agy", env, "win32"), true);
+		assert.equal(isAgyInstalled(`agy.${ext}`, env, "win32"), true);
+		assert.equal(isAgyInstalled(file, env, "win32"), true);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
 
-	fs.writeFileSync(path.join(dir, "agy.exe"), "");
-	assert.equal(isAgyInstalled("agy.exe", { PATH: dir, PATHEXT: ".EXE;.CMD" }, "win32"), true);
+test("S10c Windows searches multiple PATH directories separated by semicolons", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-win-path-"));
+	try {
+		fs.writeFileSync(path.join(dir, "agy.exe"), "");
+		assert.equal(isAgyInstalled("agy", { PATH: `${path.join(dir, "missing")};${dir}` }, "win32"), true);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("S10d POSIX treats a backslash as part of a bare filename", () => {
+	if (process.platform === "win32") return;
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-posix-"));
+	try {
+		fs.writeFileSync(path.join(dir, "agy\\v2"), "");
+		assert.equal(isAgyInstalled("agy\\v2", { PATH: dir }, "darwin"), true);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
 });

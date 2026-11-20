@@ -60,6 +60,44 @@ test("registerBridgeServer writes the exact agy entry shape into a fresh file", 
 	fs.rmSync(home, { recursive: true, force: true });
 });
 
+test.each(["", " \t\r\n", "\uFEFF", "\uFEFF \r\n"])("register accepts an empty MCP config: %j", (content) => {
+	const home = tmpHome();
+	try {
+		const file = cfgFile(home);
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, content);
+		assert.deepEqual(reg(home, ENTRY), { wrote: true, disabled: false });
+		assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), {
+			mcpServers: {
+				"pi-bridge-4242": {
+					disabled: false,
+					headers: { "x-bridge-token": "secret-token" },
+					serverUrl: "http://127.0.0.1:47881/mcp",
+				},
+			},
+		});
+	} finally {
+		fs.rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test("register accepts a UTF-8 BOM and preserves foreign config", () => {
+	const home = tmpHome();
+	try {
+		const file = cfgFile(home);
+		const foreign = { mcpServers: { foreign: { serverUrl: "https://example.com/mcp" } }, extra: { keep: true } };
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, "\uFEFF" + JSON.stringify(foreign));
+		assert.deepEqual(reg(home, ENTRY), { wrote: true, disabled: false });
+		const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+		assert.deepEqual(parsed.mcpServers.foreign, foreign.mcpServers.foreign);
+		assert.deepEqual(parsed.extra, foreign.extra);
+		assert.equal(parsed.mcpServers[bridgeServerName(ENTRY.pid)].serverUrl, "http://127.0.0.1:47881/mcp");
+	} finally {
+		fs.rmSync(home, { recursive: true, force: true });
+	}
+});
+
 test("the shared config file lands 0600 (it carries the bridge token)", () => {
 	const home = tmpHome();
 	reg(home, ENTRY);
@@ -90,15 +128,16 @@ test("register preserves foreign servers and refreshes our entry", () => {
 	fs.rmSync(home, { recursive: true, force: true });
 });
 
-test("corrupt config is refused, never clobbered", () => {
+test.each(["{broken", "\uFEFF{broken", "null", "[]", "42", "\"\""])("invalid config is refused, never clobbered: %j", (content) => {
 	const home = tmpHome();
 	const file = cfgFile(home);
 	fs.mkdirSync(path.dirname(file), { recursive: true });
-	fs.writeFileSync(file, "{broken");
+	fs.writeFileSync(file, content);
 	const res = reg(home, ENTRY);
 	assert.equal(res.wrote, false);
+	assert.equal(res.disabled, false);
 	assert.match(res.reason ?? "", /refusing/);
-	assert.equal(fs.readFileSync(file, "utf8"), "{broken");
+	assert.equal(fs.readFileSync(file, "utf8"), content);
 	fs.rmSync(home, { recursive: true, force: true });
 });
 

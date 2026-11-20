@@ -74,34 +74,26 @@ export function savedEngineMessage(engine: Engine): string {
 
 /** True when the `agy` CLI binary can be found. A binRef with a path
  *  separator (`/` or, on Windows, `\`) must exist as a file; a bare name is
- *  searched on PATH, trying `PATHEXT` extensions on Windows (`agy.exe`,
- *  `agy.cmd`) so a working install is never reported missing. statSync cannot
- *  throw through the guards, but a race (file removed between listing and
- *  stat) fails closed to false. */
+ *  searched on PATH. Windows only accepts .exe: agy is spawned without a
+ *  shell, so .cmd/.bat shims are not runnable. Dotted names (agy.v2) still
+ *  get the .exe suffix. Filesystem errors fail closed to false. */
 export function isAgyInstalled(
 	binRef: string,
 	env: NodeJS.ProcessEnv = process.env,
 	platform: NodeJS.Platform = process.platform,
 ): boolean {
-	if (path.isAbsolute(binRef) || binRef.includes("/") || binRef.includes("\\")) {
+	const windows = platform === "win32";
+	if (path.isAbsolute(binRef) || binRef.includes("/") || (windows && binRef.includes("\\"))) {
+		if (windows && !/\.exe$/i.test(binRef)) return false;
 		try {
 			return fs.statSync(binRef).isFile();
 		} catch {
 			return false;
 		}
 	}
-	const extensions =
-		platform === "win32"
-			? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
-			: [""];
-	// Only a PATHEXT suffix counts as an explicit extension. A dotted bare name
-	// (agy.v2) is still resolved through PATHEXT, so a working install is not
-	// reported missing (JD-B-005).
-	const explicitExtension =
-		platform !== "win32" || extensions.some((ext) => binRef.toLowerCase().endsWith(ext.toLowerCase()));
-	const candidates = explicitExtension ? [""] : extensions;
+	const candidates = windows && !/\.exe$/i.test(binRef) ? [".exe", ".EXE"] : [""];
 	return (env.PATH ?? "")
-		.split(path.delimiter)
+		.split(windows ? ";" : path.delimiter)
 		.filter(Boolean)
 		.some((dir) => {
 			for (const ext of candidates) {
