@@ -83,6 +83,7 @@ export async function showTasksBrowser(
 		};
 	}, {
 		overlay: true,
+		blocked: { kind: "question", message: "Choose an Antigravity task" },
 		overlayOptions: { anchor: "center" as const, width: 72, maxHeight: "85%" as const, margin: 1 },
 	});
 }

@@ -125,7 +125,7 @@ export async function showSettingsMenu(ui: ExtensionUIContext, opts: SettingsMen
 			);
 			return new FramedMenu(tui, theme, opts.title, opts.subtitle, list, opts.footer ?? MENU_FOOTER);
 		},
-		MENU_OVERLAY,
+		{ ...MENU_OVERLAY, blocked: { kind: "question", message: "Antigravity provider settings" } },
 	);
 }
 
@@ -217,6 +217,6 @@ export async function showChoiceMenu(ui: ExtensionUIContext, opts: ChoiceMenuOpt
 			list.onCancel = () => done(undefined);
 			return new FramedChoice(tui, theme, opts.title, opts.intro, list, opts.footer ?? CHOICE_FOOTER);
 		},
-		MENU_OVERLAY,
+		{ ...MENU_OVERLAY, blocked: { kind: "question", message: opts.title } },
 	);
 }
