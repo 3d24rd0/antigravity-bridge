@@ -341,7 +341,7 @@ export class AcpConnection {
 			this.#opts.log("exit", { code: code ?? signal ?? "?" });
 			// The reason rides into pending-request rejections, so it must be
 			// redacted here (server stderr can carry auth material).
-			this.#finish(redactText(this.#stderrTail.trim()));
+			this.#finish(redactText(this.#stderrTail.trim()), code, signal);
 		});
 
 		const result = (await this.request(
@@ -377,11 +377,11 @@ export class AcpConnection {
 	planTier: AgyPlanTier | null = null;
 
 	async newSession(cwd: string): Promise<AcpSessionInfo> {
-		const result = (await this.guarded(
+		const result = (await this.#sessionOperation("session/new", () => this.guarded(
 			"session/new",
 			{ cwd, mcpServers: this.#mcpServers() },
 			SESSION_OP_TIMEOUT_MS,
-		)) as Record<string, unknown>;
+		))) as Record<string, unknown>;
 		const sessionId = result.sessionId;
 		if (typeof sessionId !== "string" || sessionId.length === 0) {
 			throw new Error("ACP session/new returned no sessionId");
@@ -398,15 +398,26 @@ export class AcpConnection {
 		try {
 			// History replay arrives as notifications BEFORE this resolves; the
 			// suppression flag drops it (never live text).
-			const result = (await this.request(
+			const result = (await this.#sessionOperation("session/load", () => this.request(
 				"session/load",
 				{ sessionId, cwd, mcpServers: this.#mcpServers() },
 				SESSION_OP_TIMEOUT_MS,
-			)) as Record<string, unknown> | undefined;
+			))) as Record<string, unknown> | undefined;
 			this.lastConfigOptions = result?.configOptions;
 			this.planTier = parsePlanTier(result);
 		} finally {
 			this.updateSuppression = false;
+		}
+	}
+
+	async #sessionOperation(method: string, operation: () => Promise<unknown>): Promise<unknown> {
+		try {
+			return await operation();
+		} catch (err) {
+			if (err instanceof Error && !(err instanceof JsonRpcResponseError) && err.message === `ACP request timed out after ${SESSION_OP_TIMEOUT_MS}ms: ${method}`) {
+				throw new Error(`ACP ${method} timed out after ${SESSION_OP_TIMEOUT_MS}ms; the server may still be processing the request. Run /agy doctor to inspect the connection.`, { cause: err });
+			}
+			throw err;
 		}
 	}
 
@@ -698,7 +709,7 @@ export class AcpConnection {
 		this.#opts.log("auth-url", { url, port: parseAuthPort(url) });
 	}
 
-	#finish(reason: string): void {
+	#finish(reason: string, code: number | null = null, signal: string | null = null): void {
 		if (this.#exited) return;
 		this.#exited = true;
 		this.#authUrlWatcher?.close();
@@ -709,7 +720,7 @@ export class AcpConnection {
 		this.#permissionPending.clear();
 		for (const deny of pendings) deny();
 		this.abortAll(`connection exited: ${reason || "process gone"}`);
-		this.#opts.onExit({ code: null, signal: null, stderrTail: redactText(this.#stderrTail) });
+		this.#opts.onExit({ code, signal, stderrTail: redactText(this.#stderrTail) });
 	}
 }
 

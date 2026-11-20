@@ -35,6 +35,7 @@ const scenario = process.env.ACP_FAKE_SCENARIO || "happy";
 const sessionId = "fake-session-0001";
 let pendingPromptId = null;
 let streaming = false;
+let lateLoadId = null;
 const timers = [];
 
 // Mimic RC01's signal handler: intercept SIGTERM and linger before dying, so
@@ -182,6 +183,10 @@ async function handle(msg) {
       return;
 
     case "session/new":
+      if (scenario === "load-timeout" && lateLoadId !== null) {
+        result(lateLoadId, { configOptions: [{ id: "late" }] });
+        notifyChunk("LIVE AFTER TIMEOUT");
+      }
       if (scenario === "auth-required") {
         error(id, -32000, "Authentication required", { message: "run /agy auth-manual" });
         return;
@@ -195,6 +200,12 @@ async function handle(msg) {
       return;
 
     case "session/load":
+      if (scenario === "load-timeout") {
+        lateLoadId = id;
+        notifyChunk("REPLAY BEFORE TIMEOUT");
+        send({ jsonrpc: "2.0", method: "replay-complete", params: {} });
+        return;
+      }
       if (scenario === "load-replay") {
         send({
           jsonrpc: "2.0",

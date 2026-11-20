@@ -2,7 +2,7 @@
 // (tests/helpers/fake-acp-server.mjs, spawned over stdio). No quota, no
 // network: the fake speaks the exact wire shape captured in probe-logs/.
 
-import { afterAll, describe, test } from "vitest";
+import { afterAll, describe, test, vi } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -183,6 +183,34 @@ describe("acp/driver happy path", () => {
 });
 
 describe("acp/driver load replay (run 6 rules)", () => {
+	test("load timeout falls back once on the same connection", async () => {
+		const dir = tmpDir();
+		const logPath = path.join(dir, "log.jsonl");
+		const events: Array<{ msg: string; data: unknown }> = [];
+		const realSetTimeout = setTimeout;
+		const driver = new AcpDriver({ bin: process.execPath, binArgs: [FAKE_SERVER],
+			extraEnv: { ACP_FAKE_SCENARIO: "load-timeout", ACP_FAKE_LOG: logPath },
+			log: (msg, data) => { events.push({ msg, data }); if (msg === "initialized") vi.useFakeTimers(); } });
+		try {
+			const handle = await driver.run({ cwd: dir, model: "gemini-3.8-flash", mode: "accept-edits", skipPermissions: true, conversationId: "old", prompt: "hi" });
+			for (let i = 0; i < 500 && !sentRequests(logPath).some((r) => r.method === "session/load"); i++) {
+				await new Promise<void>((resolve) => realSetTimeout(resolve, 10));
+			}
+			assert.equal(sentRequests(logPath).filter((r) => r.method === "session/load").length, 1);
+			await vi.advanceTimersByTimeAsync(20_000);
+			vi.useRealTimers();
+			const outcome = await handle.outcome;
+			assert.equal(outcome.status, "OK");
+			assert.equal(outcome.conversationId, SESSION_ID);
+			assert.deepEqual(events.filter((e) => e.msg === "session-load-failed-creating-fresh"), [{ msg: "session-load-failed-creating-fresh", data: { sessionId: "old", message: "ACP session/load timed out after 20000ms; the server may still be processing the request. Run /agy doctor to inspect the connection." } }]);
+			const methods = sentRequests(logPath).map((r) => r.method);
+			assert.equal(methods.filter((m) => m === "initialize").length, 1);
+			assert.equal(methods.filter((m) => m === "session/load").length, 1);
+			assert.equal(methods.filter((m) => m === "session/new").length, 1);
+			assert.equal(driver.snapshot().acp?.sessionsLoaded, 1);
+			assert.equal(driver.snapshot().acp?.sessionsCreated, 1);
+		} finally { vi.useRealTimers(); await driver.close("shutdown"); fs.rmSync(dir, { recursive: true, force: true }); }
+	});
 	test("session/load history replay never reaches pi as live text", async () => {
 		const run = await tracked("load-replay", { conversationId: SESSION_ID, prompt: "live" });
 		const outcome = await run.handle.outcome;
@@ -460,6 +488,9 @@ describe("acp/driver Gate D abort", () => {
 			await new Promise((r) => setTimeout(r, 50));
 		}
 		assert.ok(exits.length > 0, "connection-exited logged");
+		if (process.platform !== "win32") {
+			assert.deepEqual(exits[0], { expected: true, code: null, signal: "SIGTERM", tail: "" });
+		}
 		assert.ok(
 			exits.every((e) => e?.expected === true),
 			"every teardown exit must carry expected: true",

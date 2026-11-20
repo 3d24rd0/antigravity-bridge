@@ -86,6 +86,11 @@ JSON-RPC 2.0 on stdio. Gemini-only: the server rejects non-Gemini models with
 - Supports images natively, and renders `agy`'s tool calls as Pi display cards.
 - `session/cancel` is probed once per connection: unsupported servers fall back
   to kill-and-reload teardown.
+- Server exits include the native exit code and signal in driver diagnostics.
+- Session creation and loading time out after 20 seconds; run `/agy doctor` to
+  inspect the connection. The server may still be processing the request. A
+  failed load retains the existing fallback to a fresh session on the same
+  connection; no new automatic retry is added.
 
 Both engines run the same `agy` binary against the same global config, so
 anything `agy` loads on its own (rules, MCP servers, settings) applies to both.
