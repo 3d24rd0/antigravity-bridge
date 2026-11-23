@@ -147,6 +147,10 @@ so neither retry nor model fallback is guaranteed to help.
 Bare `/agy` opens the interactive settings menu (stage changes, save on close).
 Tab completes the surface: subcommands first, then their closed value sets.
 
+Custom settings, choice, artifact and task dialogs provide optional waiting-for-user
+metadata to Pi. Pi clears it when the dialog closes; a supporting terminal consumer
+can display the waiting state.
+
 ### Settings
 
 | Command | Effect |
