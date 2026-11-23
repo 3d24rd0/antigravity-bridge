@@ -484,13 +484,13 @@ export class AcpDriver implements TurnDriver {
 		}
 	}
 
-	#onConnectionExit(conn: AcpConnection, info: { stderrTail: string }): void {
+	#onConnectionExit(conn: AcpConnection, info: { code: number | null; signal: string | null; stderrTail: string }): void {
 		if (this.#conn !== conn) {
 			// A replaced connection reporting its death late (RC01's signal
 			// handler intercepts SIGTERM and can outlive its replacement by
 			// seconds): its turn is long gone and the new connection owns the
 			// driver state. Clobbering #conn here would orphan the live one.
-			this.#log("stale-connection-exited", { tail: info.stderrTail.slice(-200) });
+			this.#log("stale-connection-exited", { code: info.code, signal: info.signal, tail: info.stderrTail.slice(-200) });
 			return;
 		}
 		const turn = this.#active;
@@ -501,7 +501,7 @@ export class AcpDriver implements TurnDriver {
 		// mid-flight is user-reportable, and it surfaces as a normal turn
 		// error, not as raw console noise.
 		const turnActive = Boolean(turn && !turn.closed && !turn.aborted && !turn.sawResult);
-		this.#log("connection-exited", { expected: !turnActive, tail: info.stderrTail.slice(-200) });
+		this.#log("connection-exited", { expected: !turnActive, code: info.code, signal: info.signal, tail: info.stderrTail.slice(-200) });
 		if (!turn || turn.closed) return;
 		if (turn.aborted || turn.sawResult) {
 			this.#settle(turn, {
