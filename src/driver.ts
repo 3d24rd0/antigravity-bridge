@@ -23,6 +23,7 @@ import { gateHooksStaged } from "./approval-hook.js";
 import { parkedTurnAnswer } from "./parked-turn.js";
 import { redactText } from "./redact.js";
 import { installProcessCleanup, signalExitCode } from "./process-cleanup.js";
+import { resolveAgyBinary } from "./agy-paths.js";
 import { SystemMessageSanitizer } from "./stream-sanitizer.js";
 import { type StagedImages, imagesUnavailableNote, stagePromptImages } from "./prompt-images.js";
 import type {
@@ -504,7 +505,8 @@ export class StreamDriver implements TurnDriver {
 			"--disable-slash-commands",
 		);
 
-		const child = spawn("agy", args, {
+		const binary = resolveAgyBinary();
+		const child = spawn(binary, args, {
 			cwd: request.cwd,
 			stdio: ["pipe", "pipe", "pipe"],
 			detached: process.platform !== "win32",
