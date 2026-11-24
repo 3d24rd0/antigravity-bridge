@@ -44,6 +44,8 @@ export const SYS_AGENT_PREFIX = "pi-bridge-sys-";
 /** AGY_AGENTS_ROOT override for tests and sandboxes (same contract as the
  *  ask-tool reviewer root). */
 export function syspromptAgentsRoot(): string {
+	// Intentionally still under ~/.gemini: upstream 8dee43b (#17) did not touch
+	// this agy-owned path, so it keeps its location.
 	return process.env.AGY_AGENTS_ROOT ?? path.join(os.homedir(), ".gemini", "config", "agents");
 }
 

@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "vitest";
+import { afterAll, test } from "vitest";
 import {
 	createAssistantMessageEventStream,
 	normalizeContext,
@@ -31,6 +31,23 @@ import { SessionStore } from "../src/sessions.js";
 import { setCachedQuotaReport } from "../src/usage.js";
 import { resetSyspromptAgentForTests } from "../src/sysprompt-agent.js";
 import type { DriverActivity, StreamDriver, DriverTurnRequest, TurnHandle } from "../src/driver.js";
+
+// The provider reads the bridge config through loadConfig(), whose default
+// path follows pi's agent dir (PI_CODING_AGENT_DIR). A user's live bridge
+// config (say, turnTimeoutMin) would leak into these asserts, so the whole
+// file runs against a throwaway agent dir: no config file means pure
+// defaults plus the env vars each test sets. Per-test HOME pinning below
+// additionally isolates the agy-owned ~/.gemini paths.
+const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+const fakeAgentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agy-provider-home-"));
+process.env.PI_CODING_AGENT_DIR = path.join(fakeAgentRoot, ".pi", "agent");
+afterAll(() => {
+	if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+	try {
+		fs.rmSync(fakeAgentRoot, { recursive: true, force: true });
+	} catch {}
+});
 
 const model: Model<Api> = {
 	id: "gemini-flash",

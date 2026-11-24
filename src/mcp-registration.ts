@@ -19,6 +19,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { bridgeDir } from "./config.js";
 
 /** Name convention for the bridge's per-pid server entries. */
 export function bridgeServerName(pid: number): string {
@@ -147,17 +148,13 @@ export interface SuppressionMarker {
 	delegators: Record<string, { since: number }>;
 }
 
-/** Marker path, mirroring the extensions-data convention (src/config.ts
- *  logsDir). Lives OUTSIDE ~/.gemini so agy's watched config dir stays
- *  untouched. */
-export function suppressionMarkerPath(home: string = os.homedir()): string {
-	return path.join(
-		home,
-		".pi",
-		"agent",
-		"antigravity-bridge",
-		"suppression.json",
-	);
+/** Marker path, under the bridge's agent-dir data dir (src/config.ts
+ *  bridgeDir). Lives OUTSIDE ~/.gemini so agy's watched config dir stays
+ *  untouched. Fork shape: stays under bridgeDir(); upstream 8dee43b placed it
+ *  under extensions-data, but this fork's marker has always lived here (the
+ *  pre-8dee43b path was already bridge-shaped, so only its root relocates). */
+export function suppressionMarkerPath(agentDir?: string): string {
+	return path.join(bridgeDir(agentDir), "suppression.json");
 }
 
 /** A SIGKILLed pi can leave its marker entry behind, and pid reuse could

@@ -34,6 +34,8 @@ const ORPHAN_GRACE_MS = 24 * 60 * 60 * 1000;
 
 /** ~/.gemini/config/agents - the directory agy scans for named agents. */
 export function webAgentsRoot(): string {
+	// Intentionally still under ~/.gemini: upstream 8dee43b (#17) did not touch
+	// this agy-owned path, so it keeps its location.
 	return path.join(os.homedir(), ".gemini", "config", "agents");
 }
 

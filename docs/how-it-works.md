@@ -123,7 +123,24 @@ next turn boundary rather than stranded.
 **Approvals.** When the gate is on, mutating native `agy` tools park as shadow
 Pi tools and wait for the human. A staged hook answers `agy`'s side, and the
 decision is carried back into the parked call. Expired parks deny; an answer that
-arrives late is forgotten, never applied.
+arrives late is forgotten, never applied. Both engines are covered: stream-json
+receives the staged hooks via `--add-dir`, and ACP turns get the same gate
+through the identical session-private per-pid `--add-dir` (this fork never
+stages an ACP home; upstream validated that `agy acp` honors PreToolUse hooks
+from an `--add-dir` passthrough, issue #18 — see upstream
+`scripts/probe-acp-hooks.mjs`, which this fork has no probe script for). Gating
+covers the legacy and the agy 1.5.11+ tool family (`write_file` included), and
+a gated write/edit whose target path cannot be resolved denies before parking
+instead of forwarding an unresolvable shadow. Delivery is probe-verified
+upstream on agy ≥ 1.5.12 only; the wiring logs
+`approval-gate-agy-version-unverified` when an older agy serves a gated ACP
+session.
+
+**ACP failure visibility.** An ACP turn that ends OK with no model text after a
+failed native tool (agy's non-ACP `stopReason: "stop"` drift) no longer settles
+as an empty report: the driver synthesizes a final note naming the tool and its
+redacted error. Model output still wins — a failed tool followed by a normal
+answer never gets the note.
 
 ## Conversation continuity
 
@@ -175,7 +192,7 @@ can display the waiting state.
 
 | Command | Effect |
 |---|---|
-| `/agy auth` | Prepare the ACP server and sign in. Asks the server which sign-in methods your account has and offers the browser ones (`oauth-personal`, `oauth-business` for Gemini Enterprise) with their own wording; credential methods (`gemini-api-key`, `agent-platform`) are named but not driven, since they need credentials and server settings this bridge does not manage. Detects the environment and explains what will happen, prints the exact `ssh -N -L` command for a terminal without a browser, and reprints the URL with the command if the sign-in fails. The method used is written into `settings.json`, so a completed sign-in survives a restart or a server update that rewrites that file. The URL is also saved in `~/.pi/agent/antigravity-bridge/acp-auth-urls.log` |
+| `/agy auth` | Prepare the ACP server and sign in. Asks the server which sign-in methods your account has and offers the browser ones (`oauth-personal`, `oauth-business` for Gemini Enterprise) with their own wording; credential methods (`gemini-api-key`, `agent-platform`) are named but not driven, since they need credentials and server settings this bridge does not manage. Detects the environment and explains what will happen, prints the exact `ssh -N -L` command for a terminal without a browser, and reprints the URL with the command if the sign-in fails. The method used is written into `settings.json`, so a completed sign-in survives a restart or a server update that rewrites that file. The URL is also saved in `<agentDir>/antigravity-bridge/acp-auth-urls.log` (`<agentDir>` = `$PI_CODING_AGENT_DIR` or `~/.pi/agent`) |
 | `/agy auth-manual` | Print the full manual sign-in reference |
 | `/agy acp-bin <path \| auto>` | Show or set the ACP server binary path |
 
@@ -244,10 +261,13 @@ MCP-suppression window spans the whole run and releases once, at run end.
 
 ## Runtime data
 
-The bridge's own state:
+The bridge's own state, under pi's agent dir (`<agentDir>` below — pi's
+agent-dir resolution: the `PI_CODING_AGENT_DIR` env override when set, else
+`~/.pi/agent`, so isolated or rebranded pi homes keep all bridge state
+inside the home they belong to):
 
 ```
-~/.pi/agent/antigravity-bridge/
+<agentDir>/antigravity-bridge/
 ├── config.json              # Settings persisted by /agy
 ├── sessions.json            # Pi session <-> agy conversation bindings
 ├── models-cache.json        # Cached `agy models` catalog (short TTL)
@@ -304,7 +324,7 @@ Defaults, stated plainly:
 | No sign-in URL over SSH | The bridge prints the URL and the `ssh -N -L` forward command |
 | "MCP tool bridge disabled" | The server could not bind; `/agy doctor` shows the reason |
 | A tool call answers "STILL RUNNING" | It escalated to a poll handle; the result arrives via `bridge_poll_result` |
-| Anything odd | `AGY_DEBUG=1 pi`, reproduce, then read `~/.pi/agent/antigravity-bridge/logs/<today>.ndjson` |
+| Anything odd | `AGY_DEBUG=1 pi`, reproduce, then read `<agentDir>/antigravity-bridge/logs/<today>.ndjson` (`<agentDir>` = `$PI_CODING_AGENT_DIR` or `~/.pi/agent`) |
 
 ### Remote / SSH sign-in
 
@@ -312,7 +332,9 @@ Google redirects the ACP sign-in to a loopback port on the machine running the
 bridge, which a browser elsewhere cannot reach on its own. The route that works:
 
 1. Run `/agy auth` on the remote machine. It prints Google's sign-in URL and
-   saves a copy in `~/.pi/agent/antigravity-bridge/acp-auth-urls.log`, because
+   saves a copy in `<agentDir>/antigravity-bridge/acp-auth-urls.log` (`<agentDir>`
+   = `$PI_CODING_AGENT_DIR` or `~/.pi/agent`; note this hint string is currently
+   the one bridge path still resolved from the plain home dir), because
    the notice scrolls away while the command blocks.
 2. Forward that loopback port from the machine with the browser, in a second
    terminal, **before** the page redirects:

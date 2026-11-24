@@ -40,6 +40,7 @@ async function runDriver(
 		onPermissionRequest?: AcpPermissionHandler;
 		permissionParkMs?: number;
 		signal?: AbortSignal;
+		log?: (msg: string, data?: unknown) => void;
 		onLogPath?: (logPath: string) => void;
 		onHandle?: (
 			handle: Awaited<ReturnType<AcpDriver["run"]>>,
@@ -59,7 +60,7 @@ async function runDriver(
 		usageEstimate: opts.usageEstimate,
 		onPermissionRequest: opts.onPermissionRequest,
 		permissionParkMs: opts.permissionParkMs,
-		log: () => {},
+		log: opts.log ?? (() => {}),
 	});
 	const activities: DriverActivity[] = [];
 	const controller = new AbortController();
@@ -848,5 +849,56 @@ describe("acp/driver usage synthesis (Gate B stopgap)", () => {
 		assert.equal(outcome.status, "ERROR");
 		assert.equal(outcome.usage, undefined);
 		assert.equal(run.activities.some((a) => a.type === "usage"), true);
+	});
+});
+
+describe("acp/driver silent tool failure (issue #18 F4)", () => {
+	test("a failed native tool with no model output synthesizes the final report", async () => {
+		const run = await tracked("silent-tool-fail", { prompt: "run it" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.aborted, false);
+		assert.match(outcome.response, /boom: exit 1/, "the caller must learn why the turn produced nothing");
+		assert.equal(textOf(run.activities), "", "no model text was streamed");
+	});
+
+	test("model output after a failed tool suppresses the synthesized note", async () => {
+		const run = await tracked("tool-fail-with-text", { prompt: "run it" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.response, "Recovered and here is the summary.");
+	});
+
+	test("whitespace-only model text still counts as silent", async () => {
+		const run = await tracked("tool-fail-whitespace", { prompt: "run it" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.match(outcome.response, /A native tool failed earlier in this turn/);
+		assert.match(outcome.response, /boom: exit 1/);
+	});
+
+	test("a later successful tool does not suppress the note, which reports the earlier failure", async () => {
+		const run = await tracked("tool-fail-then-success", { prompt: "run it" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.match(outcome.response, /A native tool failed earlier in this turn/);
+		assert.match(outcome.response, /boom: exit 1/);
+	});
+
+	test("a failed bridge MCP tool does not trigger the synthesized note", async () => {
+		const run = await tracked("bridge-tool-fail-silent", { prompt: "run it" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.response, "");
+	});
+
+	test("non-ACP stop reasons are logged", async () => {
+		const events: string[] = [];
+		const run = await tracked("silent-tool-fail", {
+			prompt: "run it",
+			log: (msg) => events.push(msg),
+		});
+		await run.handle.outcome;
+		assert.ok(events.includes("acp-unknown-stop-reason"), `warn missing, got: ${events.join(",")}`);
 	});
 });

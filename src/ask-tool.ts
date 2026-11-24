@@ -1095,9 +1095,10 @@ function renderAgentMessagesMarkdown(messages: readonly unknown[]): string {
 	return lines.join("\n");
 }
 
-/** Centralized scratch dir for full-context exports, following the
- *  ~/.pi/extensions-data/<author>/<extension>/ convention (see pi-token-cost-ledger).
- *  Derived from getAgentDir() so rebranded distros resolve correctly. */
+/** Centralized scratch dir for full-context exports, under the bridge's
+ *  agent-dir data dir. Upstream 8dee43b funneled this through config.ts
+ *  extensionsDataDir(); this fork has no extensions-data consumer, so it
+ *  keeps its own getAgentDir()-relative shape (already agent-dir aware). */
 function askContextDir(): string {
 	return path.join(getAgentDir(), "antigravity-bridge", "ask-context");
 }

@@ -4,7 +4,7 @@
 
 import { describe, test } from "vitest";
 import assert from "node:assert/strict";
-import { frameCarriesUsage, mapStopReason, mapUpdate, TextAccumulator, toolName } from "../src/acp/events.js";
+import { frameCarriesUsage, KNOWN_STOP_REASONS, mapStopReason, mapUpdate, TextAccumulator, toolName } from "../src/acp/events.js";
 
 
 describe("acp/events frameCarriesUsage", () => {
@@ -250,6 +250,16 @@ describe("acp/events mapStopReason", () => {
 		const mapped = mapStopReason("refusal");
 		assert.equal(mapped.status, "ERROR");
 		assert.match(mapped.error ?? "", /refused/);
+	});
+
+	test("non-ACP values like \"stop\" fall to OK and sit outside KNOWN_STOP_REASONS", () => {
+		// Issue #18 F4: agy sent the stream-json-style "stop" over ACP (after a
+		// failed native run_command). The driver logs the drift instead of
+		// settling silently.
+		assert.deepEqual(mapStopReason("stop"), { status: "OK", aborted: false });
+		assert.equal(KNOWN_STOP_REASONS.has("stop"), false);
+		assert.equal(KNOWN_STOP_REASONS.has("end_turn"), true);
+		assert.equal(KNOWN_STOP_REASONS.has("max_turn_requests"), true);
 	});
 });
 

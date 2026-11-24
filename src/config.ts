@@ -1,5 +1,5 @@
 // Runtime config for the antigravity provider. Persisted at
-// ~/.pi/agent/antigravity-bridge/config.json so the /agy command can
+// <agentDir>/antigravity-bridge/config.json so the /agy command can
 // toggle settings that take effect on the next turn.
 //
 // Knobs today:
@@ -11,26 +11,38 @@
 // and one-off runs can force a setting without editing the file.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { AGY_EFFORT_ORDER, type AgyEffort } from "./models.js";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { normalizeAgyAgentName } from "./agents.js";
 
-/** Base directory for all antigravity-bridge persistent data (config, sessions, logs, cache). */
+/** pi's agent dir (env override PI_CODING_AGENT_DIR, else ~/.pi/agent); every
+ *  bridge-owned path derives from it AT CALL TIME so isolated or rebranded pi
+ *  homes keep their state together (upstream 8dee43b / #17). */
+export function bridgeDir(agentDir: string = getAgentDir()): string {
+	return path.join(agentDir, "antigravity-bridge");
+}
+
+/** Back-compat alias kept so out-of-surface consumers (src/acp/update.ts)
+ *  compile unchanged and inherit the agent-dir resolution. Prefer bridgeDir(). */
 export function bridgeDataDir(): string {
-	return path.join(os.homedir(), ".pi", "agent", "antigravity-bridge");
+	return bridgeDir();
 }
 
+export function configPath(agentDir: string = getAgentDir()): string {
+	return path.join(bridgeDir(agentDir), "config.json");
+}
+
+/** Injection seam for loadConfig/saveConfig defaults (pre-8dee43b shape). */
 export function defaultConfigPath(): string {
-	return path.join(bridgeDataDir(), "config.json");
+	return configPath();
 }
-
-const CONFIG_PATH = defaultConfigPath();
 
 /** Daily debug logs land here, sorted by day, for post-mortems and user
- *  support (see src/daily-log.ts). Consolidated under the bridge data directory. */
-export function logsDir(): string {
-	return path.join(bridgeDataDir(), "logs");
+ *  support (see src/daily-log.ts). Fork shape: stays under the bridge data
+ *  dir; upstream 8dee43b moved logs to extensions-data, but relocating this
+ *  fork's logs would strand existing user data, so only the root relocates. */
+export function logsDir(agentDir: string = getAgentDir()): string {
+	return path.join(bridgeDir(agentDir), "logs");
 }
 
 /** Which turn engine drives turns. "acp" (the official server) is the
@@ -44,7 +56,10 @@ export type Engine = "stream-json" | "acp";
  *  chains the sign-in. */
 export const DEFAULT_ENGINE: Engine = "acp";
 export type AgyMode = "accept-edits" | "plan";
-export type ThinkingTier = AgyEffort;
+/** Kept structurally identical to models.ts AgyEffort (declared locally, not
+ *  imported, so config.ts <-> models.ts never form an import cycle now that
+ *  models.ts imports bridgeDir() from here). */
+export type ThinkingTier = "low" | "medium" | "high" | "xhigh";
 export type BridgeTools = "none" | "mcp" | "all";
 
 /** How ACP turns report token usage while Gate B stands (agy sends none).
@@ -305,9 +320,10 @@ export function loadConfig(configPath: string = defaultConfigPath()): AgyConfig 
 
 	const envThink = process.env.AGY_DEFAULT_THINKING;
 	const thinkRaw = (envThink ?? file.defaultThinking ?? DEFAULTS.defaultThinking).toLowerCase();
-	// agy's own tier vocabulary, not a second hardcoded list: a tier agy has no
+	// agy's own tier vocabulary, inlined (same values as models.ts
+	// AGY_EFFORT_ORDER) to keep config.ts models-import-free. A tier agy has no
 	// equivalent for (pi's max, a typo) falls back to the balanced default.
-	const defaultThinking: ThinkingTier = (AGY_EFFORT_ORDER as readonly string[]).includes(thinkRaw)
+	const defaultThinking: ThinkingTier = (["low", "medium", "high", "xhigh"] as readonly string[]).includes(thinkRaw)
 		? (thinkRaw as ThinkingTier)
 		: "medium";
 
@@ -469,5 +485,3 @@ export function saveConfig(patch: Partial<AgyConfig>, configPath: string = defau
 	}
 	return next;
 }
-
-export { CONFIG_PATH };

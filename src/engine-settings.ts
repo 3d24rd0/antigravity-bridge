@@ -16,7 +16,9 @@ const VALUE = "send-immediately";
 
 export type EngineSettingsOutcome = "written" | "already-set" | "unreadable" | "unwritable";
 
-/** The two engine settings files, CLI first. */
+/** The two engine settings files, CLI first. Intentionally still under
+ *  ~/.gemini: upstream 8dee43b (#17) did not touch these agy-owned paths, so
+ *  they keep their home-injected location. */
 export function engineSettingsPaths(home: string = os.homedir()): string[] {
 	return [
 		path.join(home, ".gemini", "antigravity-cli", "settings.json"),

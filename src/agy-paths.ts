@@ -21,7 +21,9 @@ export function resolveAgyBinary(): string {
 	return process.env.AGY_BIN || "agy";
 }
 
-/** Brain root for one engine. `home` injectable for tests. */
+/** Brain root for one engine. `home` injectable for tests. Intentionally
+ *  still under ~/.gemini: upstream 8dee43b (#17) did not touch these agy-owned
+ *  paths, so they keep their home-injected location. */
 export function agyBrainRoot(engine: Engine, home: string = os.homedir()): string {
 	const scope = engine === "acp" ? "antigravity-acp" : "antigravity-cli";
 	return path.join(home, ".gemini", scope, "brain");

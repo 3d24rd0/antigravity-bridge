@@ -57,6 +57,9 @@ test("stages into the private dir: group shape, matcher, generous timeout", () =
 	const handler = group.PreToolUse[0].hooks[0];
 	assert.match(group.PreToolUse[0].matcher, /create_file/);
 	assert.match(group.PreToolUse[0].matcher, /run_command/);
+	// agy 1.5.11 tool family (issue #18): write_file stays recorded in the
+	// single matcher source that feeds the deny set and the mapping.
+	assert.match(group.PreToolUse[0].matcher, /write_file/);
 	assert.equal(handler.command, 'node "/data/dir/approval-hook.mjs"');
 	// V3: timeout must exceed the park budget (soft-pass on timeout)
 	assert.ok(handler.timeout >= opts.parkBudgetMs / 1000);
