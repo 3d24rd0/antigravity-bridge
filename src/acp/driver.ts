@@ -28,7 +28,10 @@ import { SystemMessageSanitizer } from "../stream-sanitizer.js";
 import type { AgyPlanTier } from "./tier.js";
 import { AcpConnection, resolveAcpBinary, type AcpMcpServer, type AcpPermissionRequest } from "./connection.js";
 import type { AcpPermissionContext, AcpPermissionHandler } from "./connection.js";
-import { mapStopReason, mapUpdate, TextAccumulator, type AcpEditDiff } from "./events.js";
+import { mapStopReason, mapUpdate, TextAccumulator, KNOWN_STOP_REASONS, type AcpEditDiff } from "./events.js";
+import { redactText } from "../redact.js";
+import { gateHooksStaged } from "../approval-hook.js";
+import { bridgeMcpConfigDir } from "../mcp-server.js";
 import { estimateTokens, synthesizeUsage } from "./usage-estimate.js";
 import type {
 	AgyUsage,
@@ -111,6 +114,11 @@ interface ActiveTurn {
 	/** toolCallId → tool name + args + optional native diff (diff rides on
 	 *  the pending tool_call frame; updates don't repeat it). */
 	toolCalls: Map<string, { name: string; args: Record<string, unknown>; diff?: AcpEditDiff; mcpServer?: string }>;
+	/** Issue #18 F4: a native tool failed this turn. With an OK stop and no
+	 *  model output the caller would otherwise receive an empty final report
+	 *  (the reporter's stopReason "stop" after a failed run_command). */
+	sawToolError: boolean;
+	lastToolError: { name: string; message: string } | null;
 }
 
 /** Recombine the provider's (base slug, effort) into the FULL ACP model slug.
@@ -371,6 +379,11 @@ export class AcpDriver implements TurnDriver {
 			// supersede every partial estimate at the end of the turn.
 			if (result.usage) this.#emit(turn, { type: "usage", usage: result.usage });
 			const mapped = mapStopReason(result.stopReason);
+			if (!KNOWN_STOP_REASONS.has(String(result.stopReason))) {
+				// "stop" (issue #18 F4) is not an ACP enum value; silence would
+				// hide exactly the server drift that produced the empty report.
+				this.#log("acp-unknown-stop-reason", { stopReason: result.stopReason });
+			}
 			this.#settle(turn, {
 				conversationId: turn.sessionId,
 				status: mapped.status,
@@ -476,6 +489,13 @@ export class AcpDriver implements TurnDriver {
 				const entry = turn.toolCalls.get(mapped.toolCallId);
 				turn.toolCalls.delete(mapped.toolCallId);
 				const name = entry?.name ?? "tool";
+				// Only native failures feed the silent-failure note: bridge tool
+				// errors are pi's own parking surface (the provider already surfaces
+				// them), not an agy-native tool the model failed to recover from.
+				if (!mapped.mcpServer) {
+					turn.sawToolError = true;
+					turn.lastToolError = { name, message: mapped.message };
+				}
 				this.#emit(turn, { type: "tool_error", name, message: mapped.message, mcpServer: mapped.mcpServer ?? entry?.mcpServer, toolCallId: mapped.toolCallId });
 				return;
 			}
@@ -526,9 +546,18 @@ export class AcpDriver implements TurnDriver {
 		// `--uid=` on Linux); an explicit override wins, and a build with no
 		// recorded definition launches bare rather than with another's flags.
 		const launch = launchConfigFor(bin);
+		// Approval gate delivery (issue #18, adapted to this fork's structure):
+		// upstream merges the gate group into a staged ACP home; this fork has
+		// no staged ACP home, so the gate rides the same isolation-correct
+		// per-pid channel the stream-json driver uses -- an extra --add-dir
+		// with bridgeMcpConfigDir() (the agy ACP server honors PreToolUse
+		// hooks from an --add-dir passthrough; probed upstream).
+		// No-op when the gate is off (not staged at load).
+		const gateArgs: string[] = gateHooksStaged() ? ["--add-dir", bridgeMcpConfigDir()] : [];
+		const args = [...(this.#opts.binArgs ?? launch.args), ...gateArgs];
 		const conn = new AcpConnection({
 			bin,
-			binArgs: this.#opts.binArgs ?? launch.args,
+			binArgs: args,
 			extraEnv: { ...launch.env, ...this.#opts.extraEnv },
 			authUrlFile: this.#opts.authUrlFile,
 			cwd: request.cwd,
@@ -551,7 +580,7 @@ export class AcpDriver implements TurnDriver {
 		this.#conn = conn;
 		this.#log("spawn", {
 			bin,
-			args: this.#opts.binArgs ?? launch.args,
+			args,
 		});
 		return conn
 			.start()
@@ -654,13 +683,15 @@ export class AcpDriver implements TurnDriver {
 				request.contextInputTokens ??
 				estimateTokens(request.contextBlock?.text ? `${request.prompt}\n${request.contextBlock.text}` : request.prompt),
 			sawResult: false,
-		promptStarted: false,
+			promptStarted: false,
 			aborted: false,
 			abortedBy: null,
 			parks: 0,
 			overallDeadline: null,
 			overallRemainingMs: null,
 			toolCalls: new Map(),
+			sawToolError: false,
+			lastToolError: null,
 		};
 		return turn;
 	}
@@ -764,6 +795,16 @@ export class AcpDriver implements TurnDriver {
 		if (tail) {
 			const emit = turn.response.append(tail);
 			if (emit) this.#emit(turn, { type: "text", delta: emit });
+		}
+		// Issue #18 F4: a native tool failed, the model never spoke, and the
+		// server still ended OK (its "stop" is not even an ACP enum value).
+		// An empty final report hides the failure from the pi caller. rawOutput
+		// rides unfiltered in the message; redact, collapse to one line and
+		// cap - this text lands in the transcript and later in the model's
+		// context digest.
+		if (outcome.status === "OK" && !outcome.aborted && !turn.response.text.trim() && turn.sawToolError && turn.lastToolError) {
+			const detail = redactText(turn.lastToolError.message).replace(/\s+/g, " ").trim().slice(0, 300);
+			outcome.response = `[bridge] The turn ended without model output. A native tool failed earlier in this turn: ${turn.lastToolError.name}${detail ? ` (${detail})` : ""}.`;
 		}
 		// Gate B stopgap: synthesize usage on clean turns while the server sends
 		// none. Runs BEFORE close so the usage activity drains through the

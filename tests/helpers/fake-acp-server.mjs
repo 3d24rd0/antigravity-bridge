@@ -27,6 +27,15 @@
 //                      (completed, rawOutput only, no content) -> chunk
 //                      "DONE" -> end_turn (Gate C: diff arrives on the
 //                      PENDING frame, run 6:10)
+//   silent-tool-fail   prompt -> native tool_call pending + tool_call_update
+//                      failed -> stopReason "stop" (NOT an ACP enum value)
+//                      with no model text (issue #18 F4: the caller must not
+//                      receive an empty OK report)
+//   tool-fail-with-text  same, then a model chunk (output wins: no note)
+//   tool-fail-whitespace same, then a whitespace-only chunk (still silent)
+//   tool-fail-then-success native tool fails, a second one completes, no
+//                      model text (note still fires, reports the earlier
+//                      failure)
 
 import fs from "node:fs";
 import readline from "node:readline";
@@ -275,6 +284,75 @@ async function handle(msg) {
         });
         notifyChunk("DONE");
         result(id, { stopReason: "end_turn" });
+        pendingPromptId = null;
+        streaming = false;
+        return;
+      }
+      if (scenario === "silent-tool-fail" || scenario === "tool-fail-with-text" || scenario === "tool-fail-whitespace"
+        || scenario === "tool-fail-then-success") {
+        // Issue #18 F4: a native tool fails, the model never speaks, and the
+        // server ends the turn with the non-ACP stopReason "stop". The
+        // caller must not receive an empty final report.
+        send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: {
+              toolCallId: "fake-session-0001:9",
+              title: "Run boom-cmd?",
+              kind: "execute",
+              status: "pending",
+              rawInput: { CommandLine: "boom-cmd" },
+              sessionUpdate: "tool_call",
+            },
+          },
+        });
+        send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: { toolCallId: "fake-session-0001:9", status: "failed", rawOutput: "boom: exit 1", sessionUpdate: "tool_call_update" },
+          },
+        });
+        if (scenario === "tool-fail-then-success") {
+          send({
+            jsonrpc: "2.0",
+            method: "session/update",
+            params: {
+              sessionId,
+              update: { toolCallId: "fake-session-0001:10", title: "Read file", kind: "read", status: "completed", rawOutput: "ok", sessionUpdate: "tool_call_update" },
+            },
+          });
+        }
+        if (scenario === "tool-fail-with-text") notifyChunk("Recovered and here is the summary.");
+        if (scenario === "tool-fail-whitespace") notifyChunk("   \n\t  ");
+        result(id, { stopReason: "stop" });
+        pendingPromptId = null;
+        streaming = false;
+        return;
+      }
+      if (scenario === "bridge-tool-fail-silent") {
+        // A pi-bridge MCP tool fails; not a native failure, so the
+        // silent-failure note must not fire.
+        send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: {
+              toolCallId: "fake-session-0001:11",
+              title: "Run antigravity_tools?",
+              kind: "other",
+              status: "failed",
+              rawOutput: "bridge tool refused",
+              _meta: { mcp: { server: "pi-bridge" } },
+              sessionUpdate: "tool_call_update",
+            },
+          },
+        });
+        result(id, { stopReason: "stop" });
         pendingPromptId = null;
         streaming = false;
         return;

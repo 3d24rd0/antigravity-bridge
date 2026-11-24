@@ -87,14 +87,31 @@ export interface ShadowMapping {
 }
 
 /** Map an agy native tool call (hook stdin payload) onto the shadow surface.
- *  Field names follow the TODO 2.5 table: create_file is live-captured (F1);
- *  the edit-class arg names are docs-attested and degrade gracefully - a
- *  wrong guess only weakens the confirm-dialog text, never the decision
- *  (the tool runs in agy's loop either way). Unknown names return null:
- *  read-only tools are not gated. */
+ *  Field names are runtime-attested: create_file is live-captured (F1), the
+ *  write/edit pairs come from agy 1.5.11 PreToolUse captures (issue #18:
+ *  Path/Content, Path/Target/Replacement) with this fork's legacy names kept
+ *  as fallbacks. A gated write/edit whose target path cannot be resolved
+ *  returns null - the caller denies before parking, because an empty-path
+ *  shadow is decision garbage for path-prefix permission extensions. Other
+ *  unknown names return null: read-only tools are not gated. */
 export function mapNativeToShadow(name: string, args: Record<string, unknown>): ShadowMapping | null {
 	const a = args ?? {};
 	const str = (v: unknown): string => (typeof v === "string" ? v : v === undefined || v === null ? "" : String(v));
+	const pick = (...vals: unknown[]): string => {
+		for (const v of vals) {
+			const s = str(v);
+			if (s !== "") return s;
+		}
+		return "";
+	};
+	const targetPath = (...vals: unknown[]): string | null => {
+		// A target path must be a non-empty string; anything else (numbers,
+		// objects, whitespace) is an unresolved target and denies below.
+		for (const v of vals) {
+			if (typeof v === "string" && v.trim() !== "") return v.trim();
+		}
+		return null;
+	};
 	switch (name) {
 		case "run_command": {
 			const input: Record<string, unknown> = { command: str(a.CommandLine) };
@@ -102,29 +119,36 @@ export function mapNativeToShadow(name: string, args: Record<string, unknown>): 
 			return { shadow: "bash", input };
 		}
 		case "write_to_file":
-		case "create_file":
-			return { shadow: "write", input: { path: str(a.TargetFile), content: str(a.CodeContent) } };
+		case "write_file":
+		case "create_file": {
+			const path = targetPath(a.Path, a.TargetFile);
+			if (path === null) return null;
+			return { shadow: "write", input: { path, content: pick(a.Content, a.CodeContent) } };
+		}
 		case "replace_file_content":
-		case "edit_file":
+		case "edit_file": {
+			const path = targetPath(a.Path, a.TargetFile);
+			if (path === null) return null;
 			return {
 				shadow: "edit",
 				input: {
-					path: str(a.TargetFile),
-					edits: [{ oldText: str(a.TargetContent), newText: str(a.ReplacementContent) }],
+					path,
+					edits: [{ oldText: pick(a.Target, a.SearchText, a.TargetContent), newText: pick(a.Replacement, a.ReplacementContent) }],
 				},
 			};
+		}
 		case "multi_replace_file_content": {
+			const path = targetPath(a.Path, a.TargetFile);
+			if (path === null) return null;
 			const chunks = Array.isArray(a.ReplacementChunks) ? a.ReplacementChunks : [];
-			return {
-				shadow: "edit",
-				input: {
-					path: str(a.TargetFile),
-					edits: chunks.map((c) => {
-						const chunk = (c ?? {}) as Record<string, unknown>;
-						return { oldText: str(chunk.TargetContent), newText: str(chunk.ReplacementContent) };
-					}),
-				},
-			};
+			const edits = chunks.map((c) => {
+				const chunk = (c ?? {}) as Record<string, unknown>;
+				return { oldText: pick(chunk.Target, chunk.SearchText, chunk.TargetContent), newText: pick(chunk.Replacement, chunk.ReplacementContent) };
+			});
+			// Fail closed: a path with no resolvable chunk is a shadow edit
+			// carrying no change information - deny instead of parking it.
+			if (edits.length === 0 || edits.every((e) => e.oldText === "" && e.newText === "")) return null;
+			return { shadow: "edit", input: { path, edits } };
 		}
 		default:
 			return null;

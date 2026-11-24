@@ -65,9 +65,10 @@ function gateGroupPid(group: unknown): number | null {
 	return m ? Number(m[1]) : null;
 }
 
-/** agy native tools worth gating: everything that mutates the machine. */
+/** agy native tools worth gating: everything that mutates the machine.
+ *  Includes both the legacy and the agy 1.5.11+ tool families (issue #18). */
 export const GATED_AGY_TOOLS =
-	"create_file|write_to_file|replace_file_content|multi_replace_file_content|edit_file|run_command";
+	"create_file|write_to_file|write_file|replace_file_content|multi_replace_file_content|edit_file|run_command";
 
 /** The same list as a set, for the bridge's POST /approval validation: a
  *  payload for anything else is answered with a direct deny (defense in
