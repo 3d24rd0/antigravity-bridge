@@ -932,12 +932,12 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					const next = saveConfig({ digest: val === "on" });
 					ui?.notify(
 						next.digest
-							? "digest on. pi-side context (compaction summaries, other-provider turns) is injected into each agy prompt. Note: this defeats agy's prompt cache (~25-30k tokens re-billed per turn)."
-							: "digest off. agy prompts contain only your message; agy's prompt cache stays stable. Enable when mixing providers in one session and agy must see pi-side context.",
+							? "digest on (default). pi-side context ships only when the delta window is non-empty, and each piece ships once: compaction summaries, other-provider turns, and a full handoff to a fresh conversation (model switch, recreation). Pure antigravity turns have an empty delta, so their prompts stay byte-stable and agy's prompt cache keeps hitting. On the CLI the digest is byte-budgeted under the ~25KB silent-drop cap and skipped when it does not fit."
+							: "digest off. agy prompts carry only your message; a /compact rotation still ships the compaction handoff once, since the fresh conversation has nothing. Turn back on when mixing providers in one session and agy must see pi-side context.",
 						"info",
 					);
 				} else {
-					ui?.notify(`digest: ${loadConfig().digest ? "on" : "off"}\nusage: /agy digest on|off`, "info");
+					ui?.notify(`digest: ${loadConfig().digest ? "on (default)" : "off"}\nusage: /agy digest on|off`, "info");
 				}
 				return;
 			}
@@ -1070,7 +1070,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			id: "digest",
 			label: "Context digest",
 			description:
-				"Inject a delta of pi-side context into each agy prompt. Defeats agy's prompt cache (~25-30k tokens re-billed per turn).",
+				"Ship pi-side context (compaction summaries, other-provider turns, fresh-conversation handoffs) to agy. Default on and self-gating: an empty delta ships nothing, each piece ships once, so pure agy turns stay byte-stable for the prompt cache. On the CLI it is byte-budgeted under the ~25KB drop cap. Turn off for prompt-only behavior.",
 			currentValue: config.digest ? "on" : "off",
 			values: ["on", "off"],
 		},

@@ -79,6 +79,13 @@ import {
 	buildFullPrompt,
 	buildContextDigest,
 	blocksToText,
+	boundaryFingerprint,
+	compactionFingerprint,
+	digestMaxCharsForEngine,
+	findLastCompactionIdx,
+	DIGEST_MAX_CHARS,
+	STREAM_JSON_PROMPT_CAP,
+	STREAM_JSON_PROMPT_MARGIN,
 	DIGEST_PREAMBLE,
 	SYSTEM_PROMPT_PREAMBLE,
 	SYSTEM_PROMPT_END,
@@ -92,6 +99,13 @@ export {
 	buildFullPrompt,
 	buildContextDigest,
 	blocksToText,
+	boundaryFingerprint,
+	compactionFingerprint,
+	digestMaxCharsForEngine,
+	findLastCompactionIdx,
+	DIGEST_MAX_CHARS,
+	STREAM_JSON_PROMPT_CAP,
+	STREAM_JSON_PROMPT_MARGIN,
 	DIGEST_PREAMBLE,
 	SYSTEM_PROMPT_PREAMBLE,
 	SYSTEM_PROMPT_END,
@@ -116,7 +130,7 @@ function newAssistant(model: Model<Api>): AssistantMessage {
 
 /** Session key: prefer pi's sessionId (stable per conversation), fall back to
  *  cwd so a single pi process still resumes correctly when sessionId is absent. */
-function sessionKey(
+export function sessionKey(
 	options: SimpleStreamOptions | undefined,
 	cwd: string,
 	engine: "stream-json" | "acp",
@@ -522,6 +536,11 @@ async function runTurnDriver(
 	let existing = isEphemeral ? null : store.get(key);
 	const messageCount = context.messages.length;
 	const config = loadConfig();
+	// Digest settle values, written back WITH the binding: the boundary message
+	// this turn saw (validated next turn before the stored count is trusted) and
+	// the compaction summary identity this turn delivered (never re-injected).
+	const settleBoundary = boundaryFingerprint(context.messages[messageCount - 1]);
+	let settleSummaryId = existing?.digestSummaryId;
 
 	// Continuation: resolve parked round-trips from pi's toolResult messages,
 	// then re-attach to the still-running agy turn. No new user event is sent:
@@ -615,6 +634,9 @@ async function runTurnDriver(
 				stagedAgentByConversation.delete(existing.conversationId);
 			}
 			existing = null;
+			// The rotated conversation has seen NOTHING, so whatever summary the old
+			// record delivered is irrelevant to it: ship the current one.
+			settleSummaryId = undefined;
 			// The fresh conversation has seen NOTHING, and pi's compaction summary
 			// plus the turns kept after the cut exist only on the pi side. Flag the
 			// rotation so the digest ships once even with config.digest off.
@@ -668,22 +690,65 @@ async function runTurnDriver(
 			finalize(stream, blocks, "error", "No user message to send to agy.");
 			return;
 		}
-		const watermark = existing?.lastMessageCount ?? 0;
+		// Digest window. The stored count is trusted only when the transcript
+		// still carries the same boundary message it had when the count was
+		// taken: a rewrite under the count (/tree, /fork, a context hook) moves
+		// or replaces it, and a stale count would silently skip the rewritten
+		// turns. Legacy records without a fingerprint keep their count (no
+		// one-time full-history dump on upgrade); a mismatch falls back to the
+		// full delta.
+		const rawWatermark = existing?.lastMessageCount ?? 0;
+		const storedBoundary = existing?.digestBoundary;
+		const watermark =
+			rawWatermark > 0 &&
+			(storedBoundary === undefined ||
+				storedBoundary === boundaryFingerprint(context.messages[rawWatermark - 1]))
+				? rawWatermark
+				: 0;
+		// stream-json rides the digest inline in the prompt, under agy's ~25KB
+		// silent-drop cap, so budget in BYTES: multibyte content (CJK summaries,
+		// accented prose) can fit a character cap and still overflow the cap.
+		const promptBytes = Buffer.byteLength(prompt ?? "", "utf8");
+		const maxChars = digestMaxCharsForEngine(deps.engine, promptBytes);
 		// Late turns re-open the conversation with a synthetic prompt; the digest
 		// would re-send context agy already holds, so skip it. A compaction
 		// rotation is the opposite case: the rotated conversation holds nothing,
 		// so the pi-side summary + kept post-cut turns ship even when digest is
 		// off (it would otherwise silently drop the user's compacted history).
-		// ownProvider is cleared on that turn: every turn still in pi's window was
-		// produced before the rotation, so none of it is in the new conversation.
+		// A fresh conversation (no binding) ships its own prior turns too
+		// (bound: false), since agy's DB holds none of them.
 		const digest =
-			late.length === 0 && (config.digest || compactedRotation)
-				? buildContextDigest(
-						context.messages,
-						watermark,
-						compactedRotation ? { ownProvider: "" } : undefined,
-					)
+			late.length === 0 && maxChars !== null && (config.digest || compactedRotation)
+				? buildContextDigest(context.messages, watermark, {
+						bound: Boolean(existing?.conversationId),
+						seenSummaryId: existing?.digestSummaryId,
+						maxChars,
+						// ownProvider is cleared on a compaction rotation: every turn still
+						// in pi's window was produced before the rotation, so none of it is
+						// in the new conversation.
+						...(compactedRotation ? { ownProvider: "" } : {}),
+					})
 				: "";
+		// Byte guard under the char cap: an over-cap prompt is silently dropped by
+		// agy and leaves the conversation permanently unresponsive, so an
+		// over-budget digest is skipped. ACP ships the digest as a resource block
+		// (no prompt cap), so only the inline engines are budgeted.
+		let digestFinal = digest;
+		if (
+			deps.engine !== "acp" &&
+			digestFinal &&
+			promptBytes + STREAM_JSON_PROMPT_MARGIN + Buffer.byteLength(digestFinal, "utf8") >
+				STREAM_JSON_PROMPT_CAP
+		) {
+			digestFinal = "";
+		}
+		// Nothing shipped => keep the stored identity; the same summary must not
+		// come back on the next turn.
+		if (digestFinal) {
+			const deliveredIdx = findLastCompactionIdx(context.messages);
+			settleSummaryId =
+				deliveredIdx >= 0 ? compactionFingerprint(context.messages[deliveredIdx]) : undefined;
+		}
 		// G1 delivery per engine. stream-json: digest rides inline in the prompt
 		// (the CLI has no context channel). ACP: the server advertises
 		// `embeddedContext`, so the digest ships as a native resource block
@@ -692,7 +757,7 @@ async function runTurnDriver(
 		// surface, and the model needs the use-for-continuity-only instruction.
 		// The uri is suffixed per turn so a deduping server cannot serve stale
 		// content on turn 2+.
-		const embeddedDigest = deps.engine === "acp" && digest ? digest : undefined;
+		const embeddedDigest = deps.engine === "acp" && digestFinal ? digestFinal : undefined;
 		// G10, fresh conversations only (bound conversations ride agy's own
 		// history; re-sending would bloat every prompt and bust the cache).
 		// stream-json delivery is a staged agent file, NOT prompt text: agy's
@@ -738,7 +803,7 @@ async function runTurnDriver(
 		const fullPrompt =
 			late.length > 0
 				? buildLateResultPrompt(late, prompt || undefined)
-				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digest, prompt ?? "");
+				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, prompt ?? "");
 		try {
 			handle = await deps.driver.run({
 				cwd,
@@ -834,6 +899,8 @@ async function runTurnDriver(
 					lastStepIdx: -1,
 					lastMessageCount: messageCount,
 					modelId: agyModel,
+					digestBoundary: settleBoundary,
+					digestSummaryId: settleSummaryId,
 				});
 				if (stagedAgentName) stagedAgentByConversation.set(parkedConversation, stagedAgentName);
 				deps.log?.("park-binding", { conversation: parkedConversation }, "info");
@@ -962,6 +1029,8 @@ async function runTurnDriver(
 				lastStepIdx: -1,
 				lastMessageCount: messageCount,
 				modelId: agyModel,
+				digestBoundary: settleBoundary,
+				digestSummaryId: settleSummaryId,
 			});
 			if (stagedAgentName) stagedAgentByConversation.set(outcome.conversationId, stagedAgentName);
 		}

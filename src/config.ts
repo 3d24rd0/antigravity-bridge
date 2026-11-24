@@ -147,16 +147,18 @@ export interface AgyConfig {
 	/** Inject a delta digest of pi-side context (compaction summaries, turns
 	 *  handled by other providers or pi's own tools) into each agy prompt.
 	 *
-	 *  Default OFF. The digest changes every turn, which defeats agy's
-	 *  server-side prompt cache: every turn re-bills the full context
-	 *  (~25-30k tokens observed). With it off, prompts stay stable and the
-	 *  cache hits.
+	 *  Default ON, and self-gating: a digest ships only when the delta window
+	 *  is non-empty, and each piece ships once - the same compaction summary is
+	 *  never re-injected and a pure antigravity session has an empty delta, so
+	 *  its prompts stay byte-identical and agy's server-side prompt cache keeps
+	 *  hitting. Fresh conversations (model switch, engine switch, recreation)
+	 *  get the pi-side handoff they would otherwise miss. On stream-json the
+	 *  digest is budgeted in UTF-8 bytes under the CLI's ~25KB silent-drop cap
+	 *  (an over-cap digest is skipped, never sent).
 	 *
-	 *  Enable when you mix providers in one pi session (Claude turns, pi-side
-	 *  tool runs, or a compaction that agy should know about) and you value
-	 *  agy seeing that context over the cache re-billing. Pure antigravity
-	 *  sessions gain nothing: agy already keeps its own history, and bridge
-	 *  round-trips deliver tool results through the bridge, not the digest. */
+	 *  Turn off for prompt-only behavior: agy then receives only your message
+	 *  (plus the one-time system prompt), and pi-side context never crosses over.
+	 *  Env AGY_DIGEST wins over the file. */
 	digest: boolean;
 	/** Prepend pi's composed system prompt (pi tool guidance + the global
 	 *  agent-dir AGENTS.md and ancestor AGENTS.md/CLAUDE.md) to the FIRST
@@ -205,7 +207,7 @@ const DEFAULTS: AgyConfig = {
 	askTool: true,
 	webTools: false,
 	bridgeTools: "all",
-	digest: false,
+	digest: true,
 	systemPrompt: true,
 	turnTimeoutMin: 0, // placeholder: the real default is resolved per loadConfig call (defaultTurnTimeoutMin)
 	inactivityTimeoutMin: 5,
@@ -339,7 +341,7 @@ export function loadConfig(configPath: string = defaultConfigPath()): AgyConfig 
 
 	const digest = process.env.AGY_DIGEST !== undefined
 		? ["1", "true", "on"].includes(process.env.AGY_DIGEST.toLowerCase())
-		: file.digest ?? false;
+		: file.digest ?? true;
 
 	const envSys = process.env.AGY_SYSTEM_PROMPT;
 	const systemPrompt = envSys !== undefined

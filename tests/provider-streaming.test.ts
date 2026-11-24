@@ -664,14 +664,25 @@ test("streamSimple: cumulative multi-million usage spikes never reach the turn's
 	});
 });
 
-/** pi context after a compaction: the summary, then turns kept after the cut,
- *  then the current prompt. */
-function compactedContext(currentPrompt: string): TranscriptContext {
-	const assistantTurn = (provider: string, text: string) => ({
+/** Deterministic stamp derived from a text: the digest boundary fingerprint
+ *  is `role:timestamp`, so replayed transcripts must keep stable stamps or
+ *  every turn looks like a /tree rewrite (watermark reset to 0). */
+function stamp(text: string): number {
+	let h = 0;
+	for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0;
+	return 1_700_000_000_000 + Math.abs(h);
+}
+
+function userMessage(content: string, timestamp: number = stamp(content)) {
+	return { role: "user" as const, content, timestamp };
+}
+
+function assistantMessage(provider: string, text: string, timestamp: number = stamp(`${provider}:${text}`)) {
+	return {
 		role: "assistant" as const,
 		provider,
 		content: [{ type: "text" as const, text }],
-		timestamp: Date.now(),
+		timestamp,
 		model: "some-model",
 		usage: {
 			input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -679,23 +690,39 @@ function compactedContext(currentPrompt: string): TranscriptContext {
 		},
 		stopReason: "stop" as const,
 		api: "agy-bridge" as Api,
-	});
+	};
+}
+
+function compactionMessage(summary: string, timestamp: number = stamp(`summary:${summary}`)) {
+	return {
+		role: "user" as const,
+		content: `The conversation history has been compacted into the following summary:\n<summary>\n${summary}\n</summary>`,
+		timestamp,
+	};
+}
+
+type TurnMessage =
+	| ReturnType<typeof userMessage>
+	| ReturnType<typeof assistantMessage>
+	| ReturnType<typeof compactionMessage>;
+
+/** pi context after a compaction: the summary, then turns kept after the cut,
+ *  then the current prompt. Timestamps are index-stable: turn 2 rebuilds the
+ *  same transcript with a different current prompt, and the digest boundary
+ *  fingerprint must not move because of that. */
+function compactedContext(currentPrompt: string): TranscriptContext {
+	const at = (i: number) => 1_690_000_000_000 + i;
 	return normalizeContext({
 		systemPrompt: undefined,
 		messages: [
-			{ role: "user", content: "m1", timestamp: Date.now() },
-			assistantTurn("claude", "claude says hi"),
-			{ role: "user", content: "m2", timestamp: Date.now() },
-			assistantTurn("antigravity", "pre-cut agy answer"),
-			{
-				role: "user",
-				content:
-					"The conversation history has been compacted into the following summary:\n<summary>\nsqlite was chosen\n</summary>",
-				timestamp: Date.now(),
-			},
-			{ role: "user", content: "kept post-cut question", timestamp: Date.now() },
-			assistantTurn("antigravity", "agy post-cut answer"),
-			{ role: "user", content: currentPrompt, timestamp: Date.now() },
+			userMessage("m1", at(0)),
+			assistantMessage("claude", "claude says hi", at(1)),
+			userMessage("m2", at(2)),
+			assistantMessage("antigravity", "pre-cut agy answer", at(3)),
+			compactionMessage("sqlite was chosen", at(4)),
+			userMessage("kept post-cut question", at(5)),
+			assistantMessage("antigravity", "agy post-cut answer", at(6)),
+			userMessage(currentPrompt, at(7)),
 		],
 	});
 }
@@ -705,7 +732,9 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 test("sessionCompacted rotation ships the compaction summary + kept post-cut turns once, with digest off", async () => {
-	await withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined }, async () => {
+	// AGY_DIGEST=0 pins the config knob OFF: the forced compaction delivery must
+	// survive an explicit digest opt-out (the rotated conversation has nothing).
+	await withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: "0" }, async () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-compact-rot-"));
 		const store = new SessionStore(path.join(dir, "sessions.json"));
 		// A long conversation bound to agy, then pi compacts it down to 8.
@@ -761,6 +790,263 @@ test("sessionCompacted rotation ships the compaction summary + kept post-cut tur
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
+});
+
+/** Provider wired to a scripted driver bound to `conversationId`, plus a
+ *  `turn()` helper that runs one transcript and returns the captured request. */
+function digestHarness(
+	dir: string,
+	entries: { full: string; id: string }[],
+	conversationId = "conv-agy",
+) {
+	const store = new SessionStore(path.join(dir, "sessions.json"));
+	const seen: { opts?: DriverTurnRequest } = {};
+	const driver = scriptedDriver([], seen, conversationId);
+	const streamSimple = createStreamSimple({
+		entries,
+		store,
+		driver,
+		roundTrips: new ToolRoundTrips(driver),
+	});
+	const turn = async (
+		messages: TurnMessage[],
+		modelId = "gemini-flash",
+	): Promise<DriverTurnRequest | undefined> => {
+		seen.opts = undefined;
+		const stream = streamSimple(
+			{ ...model, id: modelId },
+			normalizeContext({ systemPrompt: undefined, messages }),
+			{ cwd: dir } as unknown as SimpleStreamOptions,
+		);
+		for await (const ev of stream) void ev;
+		return seen.opts;
+	};
+	return { store, seen, turn };
+}
+
+/** Isolated HOME for the duration of `run`: loadConfig() resolves the default
+ *  config path from $HOME, and the developer's real config could carry an
+ *  explicit `digest: false` that masks the default-on behavior under test. */
+async function withIsolatedHome(run: () => Promise<void>): Promise<void> {
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-home-"));
+	const prev = process.env.HOME;
+	process.env.HOME = home;
+	try {
+		await run();
+	} finally {
+		if (prev === undefined) delete process.env.HOME;
+		else process.env.HOME = prev;
+		fs.rmSync(home, { recursive: true, force: true });
+	}
+}
+
+test("digest default on: a model-switch handoff ships pi-side context to the fresh conversation", async () => {
+	await withIsolatedHome(() => withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined, AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-handoff-"));
+		try {
+			const h = digestHarness(
+				dir,
+				[
+					{ full: "gemini-3.6-flash", id: "gemini-flash" },
+					{ full: "claude-sonnet-4-6", id: "claude-sonnet" },
+				],
+				"conv-claude",
+			);
+			// The session was bound to the previous model; switching models rotates
+			// to a conversation that has seen nothing at all.
+			h.store.set(`cwd:${dir}`, {
+				conversationId: "conv-gemini",
+				lastStepIdx: -1,
+				lastMessageCount: 1,
+				modelId: "gemini-3.6-flash",
+			});
+			const opts = await h.turn(
+				[
+					userMessage("earlier question"),
+					assistantMessage("antigravity", "agy earlier answer"),
+					assistantMessage("claude", "claude says hi"),
+					userMessage("current question"),
+				],
+				"claude-sonnet",
+			);
+			assert.equal(opts?.conversationId, null, "the model switch starts a fresh conversation");
+			const prompt = opts?.prompt ?? "";
+			assert.ok(prompt.includes("[earlier user message]"), "digest ships with AGY_DIGEST unset (default on)");
+			assert.ok(prompt.includes("agy earlier answer"), "fresh conversation receives agy's own prior turns too");
+			assert.ok(prompt.includes("claude says hi"));
+			assert.ok(prompt.endsWith("current question"));
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}));
+});
+
+test("a transcript mutated under the watermark resets the digest to the full delta", async () => {
+	await withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: "1", AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-boundary-"));
+		try {
+			const h = digestHarness(dir, [{ full: "gemini-3.6-flash", id: "gemini-flash" }]);
+			const first = await h.turn([userMessage("original opener")]);
+			assert.equal(first?.prompt, "original opener");
+			// /tree or /fork rewrote the message the stored watermark points at: the
+			// old count would skip everything the rewritten branch holds.
+			const forked = await h.turn([
+				userMessage("rewritten opener", stamp("original opener") + 1),
+				assistantMessage("claude", "claude says hi"),
+				userMessage("second question"),
+			]);
+			assert.equal(forked?.conversationId, "conv-agy", "the bound conversation is resumed");
+			const prompt = forked?.prompt ?? "";
+			assert.ok(prompt.includes("rewritten opener"), "the rewritten branch ships in the delta");
+			assert.ok(prompt.includes("claude says hi"));
+			assert.ok(prompt.endsWith("second question"));
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+	test("digest steady state: pure-agy turns ship nothing, a delivered summary never repeats, a new summary ships once", async () => {
+	await withIsolatedHome(() => withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined, AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-digest-steady-"));
+		try {
+			const h = digestHarness(dir, [{ full: "gemini-3.6-flash", id: "gemini-flash" }]);
+			const key = `cwd:${dir}`;
+
+			// Turn 1: fresh conversation, nothing pi-side to carry.
+			assert.equal((await h.turn([userMessage("q1")]))?.prompt, "q1");
+
+			// Turn 2: the only new pi-side message is agy's own turn, already in
+			// its DB, so a pure-agy steady state stays byte-stable.
+			const t2 = await h.turn([
+				userMessage("q1"),
+				assistantMessage("antigravity", "a1"),
+				userMessage("q2"),
+			]);
+			assert.equal(t2?.prompt, "q2");
+			assert.equal(t2?.contextBlock, undefined, "stream-json never uses a context block");
+
+			// Turn 3: pi compacts. The summary has never been in agy's DB, so it
+			// ships (with the kept post-cut turns), and its identity settles.
+			const compacted: TurnMessage[] = [
+				compactionMessage("sqlite was chosen"),
+				userMessage("kept question"),
+				assistantMessage("antigravity", "kept answer"),
+				userMessage("q3"),
+			];
+			const t3 = await h.turn(compacted);
+			const prompt3 = t3?.prompt ?? "";
+			assert.equal(countOccurrences(prompt3, "[pi compaction summary]"), 1);
+			assert.ok(prompt3.includes("sqlite was chosen"));
+			assert.ok(prompt3.endsWith("q3"));
+			const summary1 = h.store.get(key)?.digestSummaryId;
+			assert.ok(summary1, "the delivered summary identity settles into the session record");
+
+			// Turn 4: bound steady state. The SAME summary is still in the
+			// transcript; re-injecting it would defeat the prompt cache.
+			const t4 = await h.turn([...compacted, assistantMessage("antigravity", "a3"), userMessage("q4")]);
+			assert.equal(t4?.prompt, "q4");
+
+			// Turn 5: a second compaction puts a NEW summary at index 0 (pi rebuilds
+			// post-compaction transcripts this way). Index identity would swallow
+			// it; content identity ships it exactly once.
+			const recompacted: TurnMessage[] = [
+				compactionMessage("postgres was chosen"),
+				userMessage("kept question"),
+				assistantMessage("antigravity", "kept answer"),
+				userMessage("q4"),
+				assistantMessage("antigravity", "a4"),
+				userMessage("q5"),
+			];
+			const t5 = await h.turn(recompacted);
+			const prompt5 = t5?.prompt ?? "";
+			assert.equal(countOccurrences(prompt5, "[pi compaction summary]"), 1);
+			assert.ok(prompt5.includes("postgres was chosen"));
+			assert.ok(!prompt5.includes("sqlite was chosen"), "the superseded summary is not replayed");
+			assert.ok(prompt5.endsWith("q5"));
+			const summary2 = h.store.get(key)?.digestSummaryId;
+			assert.ok(summary2 && summary2 !== summary1, "a new summary replaces the recorded identity");
+
+			// Turn 6: the new summary is delivered, so the next bound turn is bare.
+			const t6 = await h.turn([...recompacted, assistantMessage("antigravity", "a5"), userMessage("q6")]);
+			assert.equal(t6?.prompt, "q6");
+			assert.equal(h.store.get(key)?.digestSummaryId, summary2);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}));
+});
+
+test("legacy record without digestBoundary keeps its watermark (no duplicate dump) and settle fills it", async () => {
+	await withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: "1", AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-boundary-legacy-"));
+		try {
+			const h = digestHarness(dir, [{ full: "gemini-3.6-flash", id: "gemini-flash" }]);
+			const key = `cwd:${dir}`;
+			// A record written before digestBoundary existed. Its count is trusted
+			// as-is: resetting would dump the whole history once on upgrade.
+			h.store.set(key, {
+				conversationId: "conv-agy",
+				lastStepIdx: -1,
+				lastMessageCount: 2,
+				modelId: "gemini-3.6-flash",
+			});
+			const opts = await h.turn([
+				userMessage("m1"),
+				assistantMessage("antigravity", "a1"),
+				userMessage("m2"),
+			]);
+			assert.equal(opts?.prompt, "m2", "legacy record trusted: no full-history dump");
+			const rec = h.store.get(key);
+			assert.equal(rec?.digestBoundary, `user:${stamp("m2")}`, "settle records the boundary it saw");
+			assert.equal(rec?.lastMessageCount, 3);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+test("stream-json budgets the prompt and the digest in UTF-8 bytes, not characters", async () => {
+	await withIsolatedHome(() => withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined, AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-byte-budget-"));
+		try {
+			const h = digestHarness(dir, [{ full: "gemini-3.6-flash", id: "gemini-flash" }]);
+			const cjk = (n: number) => "漢".repeat(n);
+
+			// (a) The prompt alone exhausts the byte budget: 8k CJK chars are ~24KB
+			// although the character count looks harmless.
+			const bigPrompt = cjk(8_000);
+			const a = await h.turn([
+				userMessage("earlier context"),
+				assistantMessage("claude", "claude says hi"),
+				userMessage(bigPrompt),
+			]);
+			assert.equal(a?.prompt, bigPrompt, "digest skipped when the prompt's UTF-8 bytes exhaust the cap");
+
+			// (b) The DIGEST is multibyte: it fits the 8000-char cap but overflows
+			// the remaining byte budget, so stream-json must skip it (agy silently
+			// drops an over-cap prompt).
+			const b = await h.turn([
+				userMessage("tiny"),
+				assistantMessage("claude", cjk(8_000)),
+				userMessage("current"),
+			]);
+			assert.equal(b?.prompt, "current", "digest skipped when its UTF-8 bytes overflow the cap");
+
+			// (c) A multibyte digest that fits the byte budget still ships.
+			const c = await h.turn([
+				userMessage("tiny"),
+				assistantMessage("claude", cjk(2_000)),
+				userMessage("final"),
+			]);
+			const prompt = c?.prompt ?? "";
+			assert.ok(prompt.includes("context from the broader pi session"), "under-budget multibyte digest ships");
+			assert.ok(prompt.includes("漢"));
+			assert.ok(prompt.endsWith("final"));
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}));
 });
 
 test("ephemeral turn (cacheRetention 'none') never opens the pi system-prompt gate", async () => {
