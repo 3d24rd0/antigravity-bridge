@@ -132,10 +132,10 @@ Pi and `agy` both keep conversations; the bridge keeps them in step.
 | Concern | Mechanism |
 |---|---|
 | Binding | `sessions.json` maps a Pi session to an `agy` conversation id |
-| Fresh context | On a new conversation, an optional digest replays Pi-side history bounded by `maxChars` |
+| Context digest | **On by default and self-gating**: Pi-side context (compaction summaries, turns handled by other providers or Pi's own tools) ships only when the delta window is non-empty, and each piece ships once. A fresh conversation (model switch, recreation) gets the full handoff; a pure-Antigravity conversation has an empty delta, so its prompts stay byte-identical and `agy`'s prompt cache keeps hitting. On the CLI the digest is budgeted in UTF-8 bytes under the ~25KB silent-drop cap and skipped when it does not fit |
 | System prompt | Staged once per conversation (agent file on CLI, inline on ACP) so the prompt cache survives |
 | Model switch | A conversation is bound to the model that created it, so switching rotates the binding |
-| Failed turns | The watermark only advances on a clean, non-aborted turn |
+| Failed turns | The watermark only advances on a clean, non-aborted turn; a `role:timestamp` boundary fingerprint resets the delta window when the transcript was rewritten (`/tree`, `/fork`) |
 
 Both engines report the complete upstream individual-quota notice as a rate-limit
 error rather than a successful turn, without advancing the context watermark.
@@ -167,7 +167,7 @@ can display the waiting state.
 | `/agy web on \| off` | Register `agy_web_search` / `agy_read_url` for any provider |
 | `/agy bridge all \| mcp \| none` | Which Pi tools the bridge exposes |
 | `/agy tools [hide \| show <name> \| reset]` | Per-session catalog filtering |
-| `/agy digest on \| off` | Replay Pi-side history into fresh conversations |
+| `/agy digest on \| off` | Ship Pi-side context into `agy` conversations. Default on and self-gating: fresh-conversation handoffs, each compaction summary exactly once, non-agy turns only; empty deltas ship nothing and CLI digests are byte-budgeted under ~25KB |
 | `/agy system-prompt on \| off` | Carry Pi's system prompt into `agy` conversations |
 | `/agy clear` | Drop stored conversation bindings |
 
@@ -209,7 +209,7 @@ and is never written back to it.
 | `AGY_BRIDGE_TOOLS` | `all` \| `mcp` \| `none` | Bridge catalog |
 | `AGY_ASK_TOOL` | truthy | Register `AskAntigravity` |
 | `AGY_WEB_TOOLS` | truthy | Register the web tools |
-| `AGY_DIGEST` | truthy | Send the context digest |
+| `AGY_DIGEST` | `0` \| `false` \| `off` | Send the context digest. Default ON (`1`/`true`/`on` or unset); `digest: false` in `config.json` also disables |
 | `AGY_SYSTEM_PROMPT` | truthy | Carry Pi's system prompt |
 | `AGY_DEFAULT_MODEL` / `AGY_DEFAULT_THINKING` | slug / level | `AskAntigravity` defaults |
 | `AGY_TURN_TIMEOUT_MIN` / `AGY_INACTIVITY_TIMEOUT_MIN` | minutes or `0` | Turn cap / stall guard |

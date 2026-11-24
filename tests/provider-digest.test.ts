@@ -8,7 +8,13 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { Message, Usage } from "@earendil-works/pi-ai";
-import { buildContextDigest } from "../src/provider.js";
+import {
+	boundaryFingerprint,
+	buildContextDigest,
+	compactionFingerprint,
+	digestMaxCharsForEngine,
+	findLastCompactionIdx,
+} from "../src/provider.js";
 
 // pi wraps compaction summaries with this boilerplate (core/messages.js).
 const COMP_PREFIX = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
@@ -165,4 +171,88 @@ test("ownProvider override changes which assistant turns are skipped", () => {
 		ownProvider: "gemini",
 	});
 	assert.match(digest, /\[assistant turn from antigravity\]/);
+});
+
+test("fresh conversation (bound: false) includes own turns and tool results", () => {
+	const msgs = [asst("antigravity", "prior answer"), toolResult("read", "file body"), user("now")];
+	const fresh = buildContextDigest(msgs, 0, { bound: false });
+	assert.match(fresh, /\[assistant turn from antigravity\]/);
+	assert.match(fresh, /prior answer/);
+	assert.match(fresh, /\[tool result: read\]/);
+	assert.match(fresh, /file body/);
+	// bound mode (default) keeps the own-provider skip
+	assert.doesNotMatch(buildContextDigest(msgs, 0), /prior answer/);
+});
+
+test("a compaction below a stale watermark resets the window and ships the delta", () => {
+	const msgs = [compaction("the summary"), user("post-compaction note"), user("now")];
+	const digest = buildContextDigest(msgs, 6);
+	assert.match(digest, /the summary/);
+	assert.match(digest, /\[earlier user message\]/);
+	assert.match(digest, /post-compaction note/);
+});
+
+test("an already-delivered compaction (same content) is not re-injected", () => {
+	const msgs = [compaction("the summary"), user("post-compaction note"), user("now")];
+	const digest = buildContextDigest(msgs, 6, { seenSummaryId: compactionFingerprint(msgs[0]) });
+	assert.doesNotMatch(digest, /the summary/);
+	assert.match(digest, /post-compaction note/);
+});
+
+test("a second compaction re-arms delivery and restarts the window (pi shape)", () => {
+	const msgs = [compaction("new sum"), user("post-second note"), user("now")];
+	const first = compaction("old sum");
+	const digest = buildContextDigest(msgs, 7, { seenSummaryId: compactionFingerprint(first) });
+	assert.match(digest, /new sum/);
+	assert.doesNotMatch(digest, /old sum/);
+	assert.match(digest, /post-second note/);
+});
+
+test("an oversized compaction summary is clamped to the digest budget", () => {
+	const big = compaction("S".repeat(30_000) + " tail gist");
+	const digest = buildContextDigest([big, user("now")], 0, { maxChars: 5000 });
+	assert.ok(digest.length <= 5000, `digest length ${digest.length} exceeds cap 5000`);
+	assert.match(digest, /\[truncated\]/);
+	assert.ok(digest.includes("S".repeat(100)), "summary head must be kept");
+	assert.doesNotMatch(digest, /tail gist/);
+});
+
+test("findLastCompactionIdx finds the last summary, skips non-user noise", () => {
+	const msgs = [user("plain"), compaction("first"), asst("claude", "noise"), compaction("second"), user("now")];
+	assert.equal(findLastCompactionIdx(msgs), 3);
+	assert.equal(findLastCompactionIdx([user("plain"), asst("claude", "x")]), -1);
+	assert.equal(findLastCompactionIdx([]), -1);
+});
+
+test("boundaryFingerprint is role:timestamp, undefined for no message", () => {
+	assert.equal(boundaryFingerprint(undefined), undefined);
+	assert.equal(boundaryFingerprint(user("x", 1234)), "user:1234");
+	assert.equal(boundaryFingerprint(asst("claude", "x", 99)), "assistant:99");
+});
+
+test("compactionFingerprint is stable per content and separates summaries", () => {
+	const a = compaction("summary A");
+	const a2 = compaction("summary A");
+	const b = compaction("summary B");
+	assert.equal(compactionFingerprint(a), compactionFingerprint(a2));
+	assert.notEqual(compactionFingerprint(a), compactionFingerprint(b));
+});
+
+test("digestMaxCharsForEngine: acp uncapped by the prompt, stream-json byte-budgeted", () => {
+	assert.equal(digestMaxCharsForEngine("acp", 90_000), 8000);
+	assert.equal(digestMaxCharsForEngine("stream-json", 0), 8000);
+	assert.equal(digestMaxCharsForEngine("stream-json", 5000), 8000);
+	assert.equal(digestMaxCharsForEngine("stream-json", 20_000), 904);
+	assert.equal(digestMaxCharsForEngine("stream-json", 21_000), null);
+	assert.equal(digestMaxCharsForEngine("stream-json", 25_000), null);
+});
+
+test("a cap below the truncation marker's floor squeezes a pending delta to an empty digest", () => {
+	// Below "[truncated]\n" the delta truncator cannot express a cut at all:
+	// buildContextDigest returns "" even when parts are pending. The provider
+	// uses this floor to tell a squeezed byte-budget skip apart from a
+	// genuinely empty delta window (S4).
+	const msgs = [user("a delta part that cannot fit"), user("now")];
+	assert.equal(buildContextDigest(msgs, 0, { maxChars: 12 }), "");
+	assert.ok(buildContextDigest(msgs, 0, { maxChars: 13 }).length > 0, "13 chars can express the marker");
 });

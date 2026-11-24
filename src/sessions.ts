@@ -32,6 +32,16 @@ export interface AgySession {
 	/** agy model slug (e.g. "gemini-3.8-flash") that created the conversation.
 	 *  A model switch rotates the conversation to avoid mismatched backend quota. */
 	modelId?: string;
+	/** role:timestamp fingerprint of messages[lastMessageCount - 1] at write
+	 *  time. The provider compares it against the live boundary message: a
+	 *  mismatch (branch, fork, context-hook rewrite) resets the digest window
+	 *  to the full delta. Optional: absent on records predating the
+	 *  fingerprint, which the provider trusts as-is to avoid a one-time dump. */
+	digestBoundary?: string;
+	/** Content fingerprint of the compaction summary already delivered in a
+	 *  previous digest, so the builder does not re-inject the same summary.
+	 *  Optional/absent when no compaction existed at write time. */
+	digestSummaryId?: string;
 }
 
 type StoreMap = Record<string, AgySession>;
@@ -52,11 +62,15 @@ function narrowStoreMap(parsed: unknown): StoreMap {
 		const idx = (value as { lastStepIdx?: unknown }).lastStepIdx;
 		const mc = (value as { lastMessageCount?: unknown }).lastMessageCount;
 		const mid = (value as { modelId?: unknown }).modelId;
+		const db = (value as { digestBoundary?: unknown }).digestBoundary;
+		const dci = (value as { digestSummaryId?: unknown }).digestSummaryId;
 		clean[key] = {
 			conversationId,
 			lastStepIdx: typeof idx === "number" && Number.isFinite(idx) ? idx : -1,
 			lastMessageCount: typeof mc === "number" && Number.isFinite(mc) ? mc : 0,
 			...(typeof mid === "string" ? { modelId: mid } : {}),
+			...(typeof db === "string" ? { digestBoundary: db } : {}),
+			...(typeof dci === "string" ? { digestSummaryId: dci } : {}),
 		};
 	}
 	return clean;
@@ -99,6 +113,8 @@ export class SessionStore {
 			lastStepIdx: s.lastStepIdx ?? -1,
 			lastMessageCount: s.lastMessageCount ?? 0,
 			...(s.modelId ? { modelId: s.modelId } : {}),
+			...(s.digestBoundary !== undefined ? { digestBoundary: s.digestBoundary } : {}),
+			...(s.digestSummaryId !== undefined ? { digestSummaryId: s.digestSummaryId } : {}),
 		};
 	}
 

@@ -60,6 +60,23 @@ let warnedUserAgentConflict = false;
  *  each other's files. */
 const stagedAgentByConversation = new Map<string, string>();
 
+/** conversationId -> pending retry after a byte-budget-skipped digest (S4).
+ *  "rotation": the forced compaction-rotation handoff (summary + kept
+ *  post-cut turns, own turns included) is still undelivered, so the next
+ *  bound turn runs the digest in rotation shape again. "fresh": a skipped
+ *  NON-rotation fresh handoff (model switch, engine switch, recreation
+ *  recovery, first-ever binding) is still undelivered, so the next turn runs
+ *  the digest in fresh shape again (own turns included — the conversation has
+ *  seen none of them). "hold": a parked skip bound a conversation whose
+ *  continuation settles the SAME pending delta; that continuation settle must
+ *  not consume it either. The settled record itself keeps the previous
+ *  watermark/boundary; this only bridges in-process state that the session
+ *  record cannot express. A marker is cleared as soon as the handoff it
+ *  describes actually SHIPS — on the park path AND the clean-OK settle
+ *  (round-2 R2-S1) — and a gate-closed settle with the digest disabled by
+ *  configuration deliberately drops it (round-2 R2-S2). */
+const digestSkipPending = new Map<string, "rotation" | "hold" | "fresh">();
+
 /** Zero-usage helper. agy doesn't expose token counts; pi's cost math gets
  *  zeros (we're not billing through this provider). */
 function zeroUsage(): Usage {
@@ -79,6 +96,14 @@ import {
 	buildFullPrompt,
 	buildContextDigest,
 	blocksToText,
+	boundaryFingerprint,
+	compactionFingerprint,
+	digestMaxCharsForEngine,
+	findLastCompactionIdx,
+	DIGEST_MAX_CHARS,
+	DIGEST_TRUNCATION_FLOOR_CHARS,
+	STREAM_JSON_PROMPT_CAP,
+	STREAM_JSON_PROMPT_MARGIN,
 	DIGEST_PREAMBLE,
 	SYSTEM_PROMPT_PREAMBLE,
 	SYSTEM_PROMPT_END,
@@ -92,6 +117,14 @@ export {
 	buildFullPrompt,
 	buildContextDigest,
 	blocksToText,
+	boundaryFingerprint,
+	compactionFingerprint,
+	digestMaxCharsForEngine,
+	findLastCompactionIdx,
+	DIGEST_MAX_CHARS,
+	DIGEST_TRUNCATION_FLOOR_CHARS,
+	STREAM_JSON_PROMPT_CAP,
+	STREAM_JSON_PROMPT_MARGIN,
 	DIGEST_PREAMBLE,
 	SYSTEM_PROMPT_PREAMBLE,
 	SYSTEM_PROMPT_END,
@@ -116,7 +149,7 @@ function newAssistant(model: Model<Api>): AssistantMessage {
 
 /** Session key: prefer pi's sessionId (stable per conversation), fall back to
  *  cwd so a single pi process still resumes correctly when sessionId is absent. */
-function sessionKey(
+export function sessionKey(
 	options: SimpleStreamOptions | undefined,
 	cwd: string,
 	engine: "stream-json" | "acp",
@@ -522,6 +555,11 @@ async function runTurnDriver(
 	let existing = isEphemeral ? null : store.get(key);
 	const messageCount = context.messages.length;
 	const config = loadConfig();
+	// Digest settle values, written back WITH the binding: the boundary message
+	// this turn saw (validated next turn before the stored count is trusted) and
+	// the compaction summary identity this turn delivered (never re-injected).
+	const settleBoundary = boundaryFingerprint(context.messages[messageCount - 1]);
+	let settleSummaryId = existing?.digestSummaryId;
 
 	// Continuation: resolve parked round-trips from pi's toolResult messages,
 	// then re-attach to the still-running agy turn. No new user event is sent:
@@ -615,12 +653,58 @@ async function runTurnDriver(
 				stagedAgentByConversation.delete(existing.conversationId);
 			}
 			existing = null;
+			// The rotated conversation has seen NOTHING, so whatever summary the old
+			// record delivered is irrelevant to it: ship the current one.
+			settleSummaryId = undefined;
 			// The fresh conversation has seen NOTHING, and pi's compaction summary
 			// plus the turns kept after the cut exist only on the pi side. Flag the
 			// rotation so the digest ships once even with config.digest off.
 			if (sessionCompacted) compactedRotation = true;
 		}
 	}
+
+	// Digest window. The stored count is trusted only when the transcript
+	// still carries the same boundary message it had when the count was
+	// taken: a rewrite under the count (/tree, /fork, a context hook) moves
+	// or replaces it, and a stale count would silently skip the rewritten
+	// turns. Legacy records without a fingerprint keep their count (no
+	// one-time full-history dump on upgrade); a mismatch falls back to the
+	// full delta. Hoisted because the settle paths below (park binding, clean
+	// OK) must know the previous watermark, not just this turn's digest.
+	const rawWatermark = existing?.lastMessageCount ?? 0;
+	const storedBoundary = existing?.digestBoundary;
+	const watermark =
+		rawWatermark > 0 &&
+		(storedBoundary === undefined ||
+			storedBoundary === boundaryFingerprint(context.messages[rawWatermark - 1]))
+			? rawWatermark
+			: 0;
+	// S4 settle values for a byte-budget skip: the PREVIOUS watermark and its
+	// boundary (0/undefined when there was no trusted prior watermark), so the
+	// pending delta is not consumed and a later, smaller turn re-delivers it.
+	const skipBoundary = watermark > 0 ? storedBoundary : undefined;
+	// A skipped forced rotation must re-run in rotation shape (own turns
+	// included) on the next bound turn. A skipped NON-rotation fresh handoff
+	// (model switch, engine switch, recreation recovery, first-ever binding)
+	// must ALSO re-run in fresh shape: the retried conversation has seen NONE
+	// of its own prior turns, so `ownProvider` stays cleared for as many
+	// retries as the handoff needs. A bound steady-state skip ("hold") keeps
+	// them — agy's own DB already holds those turns.
+	const retryRotation = Boolean(
+		existing?.conversationId && digestSkipPending.get(existing.conversationId) === "rotation",
+	);
+	const retryFresh = Boolean(
+		existing?.conversationId && digestSkipPending.get(existing.conversationId) === "fresh",
+	);
+	let digestSkipped = false;
+	let digestShipped = false;
+	// Why the digest gate was closed on this fresh pass, when it was (round-2
+	// judgment R2-S2/R2-S3). "late": a late-result reattachment turn
+	// transiently suppressed the digest — a settle carrying a pending skip
+	// must NOT consume the window and the marker must survive. "config": the
+	// digest is disabled by configuration for this turn — the pending handoff
+	// is deliberately dropped (settle normally, clear the marker).
+	let gateClosedBy: "config" | "late" | undefined;
 
 	let handle: TurnHandle | undefined;
 	// Name of the carrier agent staged for THIS turn's fresh conversation, if
@@ -668,31 +752,6 @@ async function runTurnDriver(
 			finalize(stream, blocks, "error", "No user message to send to agy.");
 			return;
 		}
-		const watermark = existing?.lastMessageCount ?? 0;
-		// Late turns re-open the conversation with a synthetic prompt; the digest
-		// would re-send context agy already holds, so skip it. A compaction
-		// rotation is the opposite case: the rotated conversation holds nothing,
-		// so the pi-side summary + kept post-cut turns ship even when digest is
-		// off (it would otherwise silently drop the user's compacted history).
-		// ownProvider is cleared on that turn: every turn still in pi's window was
-		// produced before the rotation, so none of it is in the new conversation.
-		const digest =
-			late.length === 0 && (config.digest || compactedRotation)
-				? buildContextDigest(
-						context.messages,
-						watermark,
-						compactedRotation ? { ownProvider: "" } : undefined,
-					)
-				: "";
-		// G1 delivery per engine. stream-json: digest rides inline in the prompt
-		// (the CLI has no context channel). ACP: the server advertises
-		// `embeddedContext`, so the digest ships as a native resource block
-		// instead of prompt text (plan phase 3). The preamble framing goes INTO
-		// the block: an unlabeled blob of other-agent turns is a mild injection
-		// surface, and the model needs the use-for-continuity-only instruction.
-		// The uri is suffixed per turn so a deduping server cannot serve stale
-		// content on turn 2+.
-		const embeddedDigest = deps.engine === "acp" && digest ? digest : undefined;
 		// G10, fresh conversations only (bound conversations ride agy's own
 		// history; re-sending would bloat every prompt and bust the cache).
 		// stream-json delivery is a staged agent file, NOT prompt text: agy's
@@ -705,6 +764,8 @@ async function runTurnDriver(
 		// "none") are throwaway: they must not carry the pi system prompt, which
 		// otherwise wraps the summarization instructions in pi's operating block
 		// and the tool-priority note.
+		// Decided BEFORE the digest budget below: whether the pi system prompt
+		// will ride INLINE in the composed prompt decides that budget (I2).
 		const gateOpen = config.systemPrompt && !existing?.conversationId && !isEphemeral;
 		const rawSysPrompt = gateOpen ? getCurrentSystemPrompt(context.messages) || undefined : undefined;
 		let sysPrompt = rawSysPrompt;
@@ -719,8 +780,9 @@ async function runTurnDriver(
 					sysPrompt = undefined;
 					stagedAgentName = stagedName;
 				}
-				// Staging failed: inline fallback. The silent-drop guard below
-				// keeps the resulting cap failure visible instead of quiet.
+				// Staging failed: inline fallback. The byte guard below now counts
+				// the inline block, so the resulting cap risk skips the digest
+				// instead of surfacing as a dropped turn.
 			} else if (rawSysPrompt && config.agent && !warnedUserAgentConflict) {
 				warnedUserAgentConflict = true;
 				deps.log?.(
@@ -735,10 +797,106 @@ async function runTurnDriver(
 				agent = stagedAgentByConversation.get(existing.conversationId);
 			}
 		}
+		// stream-json rides the digest inline in the prompt, under agy's ~25KB
+		// silent-drop cap, so budget in BYTES over what will REALLY be composed:
+		// multibyte content (CJK summaries, accented prose) can fit a character
+		// cap and still overflow the cap, and an INLINE system-prompt block (a
+		// user-configured AGY_AGENT, or a staging failure falling back to the
+		// legacy block) shares that same budget (I2). ACP ships the digest as a
+		// resource block (the 8000-char cap stands), so only the inline engines
+		// are budgeted. The joiner is the one the composed prompt will use; the
+		// margin covers the digest's own framing plus the second joiner.
+		const inlineSysPromptBytes =
+			deps.engine !== "acp" && sysPrompt
+				? Buffer.byteLength(buildFullPrompt(sysPrompt, "", "") + "\n\n---\n\n", "utf8")
+				: 0;
+		const promptBytes = Buffer.byteLength(prompt ?? "", "utf8") + inlineSysPromptBytes;
+		const maxChars = digestMaxCharsForEngine(deps.engine, promptBytes);
+		// Late turns re-open the conversation with a synthetic prompt; the digest
+		// would re-send context agy already holds, so skip it. A compaction
+		// rotation is the opposite case: the rotated conversation holds nothing,
+		// so the pi-side summary + kept post-cut turns ship even when digest is
+		// off (it would otherwise silently drop the user's compacted history).
+		// A fresh conversation (no binding) ships its own prior turns too
+		// (bound: false), since agy's DB holds none of them. A still-pending
+		// rotation handoff (S4 retry after a byte-budget skip) forces the gate
+		// for the same reason.
+		const digestGate = late.length === 0 && (config.digest || compactedRotation || retryRotation);
+		if (!digestGate) {
+			gateClosedBy = late.length > 0 ? "late" : "config";
+		}
+		let digest = "";
+		if (digestGate) {
+			digest = buildContextDigest(context.messages, watermark, {
+				bound: Boolean(existing?.conversationId),
+				seenSummaryId: existing?.digestSummaryId,
+				// An exhausted budget (maxChars null) is decided by the byte guard
+				// below against the composed prompt; the digest is still built so
+				// an empty delta stays distinguishable from a pending one.
+				maxChars: maxChars ?? DIGEST_MAX_CHARS,
+				// ownProvider is cleared on a compaction rotation: every turn still
+				// in pi's window was produced before the rotation, so none of it is
+				// in the new conversation. The S4 rotation retry keeps that shape,
+				// and so does the retry of a skipped NON-rotation fresh handoff
+				// (the fresh conversation holds none of those turns either).
+				...(compactedRotation || retryRotation || retryFresh ? { ownProvider: "" } : {}),
+			});
+		}
+		// Byte guard under the char cap: an over-cap prompt is silently dropped by
+		// agy and leaves the conversation permanently unresponsive, so an
+		// over-budget digest is skipped. The skip must NOT consume the pending
+		// delta (S4): the settle keeps the previous watermark and boundary so a
+		// later, smaller turn re-delivers the handoff.
+		let digestFinal = digest;
+		if (
+			deps.engine !== "acp" &&
+			digestFinal &&
+			promptBytes + STREAM_JSON_PROMPT_MARGIN + Buffer.byteLength(digestFinal, "utf8") >
+				STREAM_JSON_PROMPT_CAP
+		) {
+			digestFinal = "";
+			digestSkipped = true;
+		} else if (
+			// A cap too tight to even express truncation (marker + separator) can
+			// squeeze the builder to "" while parts are pending: skip the same way,
+			// probing the UNCLAMPED window to separate that from an empty one.
+			// Only a digest-bearing turn can skip; digest-off turns advance
+			// the watermark exactly as before.
+			deps.engine !== "acp" &&
+			digestGate &&
+			digest === "" &&
+			maxChars !== null &&
+			maxChars < DIGEST_TRUNCATION_FLOOR_CHARS
+		) {
+			digestSkipped =
+				buildContextDigest(context.messages, watermark, {
+					bound: Boolean(existing?.conversationId),
+					seenSummaryId: existing?.digestSummaryId,
+					maxChars: DIGEST_MAX_CHARS,
+					...(compactedRotation || retryRotation || retryFresh ? { ownProvider: "" } : {}),
+				}) !== "";
+		}
+		digestShipped = digestFinal !== "";
+		// Nothing shipped => keep the stored identity; the same summary must not
+		// come back on the next turn.
+		if (digestFinal) {
+			const deliveredIdx = findLastCompactionIdx(context.messages);
+			settleSummaryId =
+				deliveredIdx >= 0 ? compactionFingerprint(context.messages[deliveredIdx]) : undefined;
+		}
+		// G1 delivery per engine. stream-json: digest rides inline in the prompt
+		// (the CLI has no context channel). ACP: the server advertises
+		// `embeddedContext`, so the digest ships as a native resource block
+		// instead of prompt text (plan phase 3). The preamble framing goes INTO
+		// the block: an unlabeled blob of other-agent turns is a mild injection
+		// surface, and the model needs the use-for-continuity-only instruction.
+		// The uri is suffixed per turn so a deduping server cannot serve stale
+		// content on turn 2+.
+		const embeddedDigest = deps.engine === "acp" && digestFinal ? digestFinal : undefined;
 		const fullPrompt =
 			late.length > 0
 				? buildLateResultPrompt(late, prompt || undefined)
-				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digest, prompt ?? "");
+				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, prompt ?? "");
 		try {
 			handle = await deps.driver.run({
 				cwd,
@@ -832,12 +990,40 @@ async function runTurnDriver(
 				store.set(key, {
 					conversationId: parkedConversation,
 					lastStepIdx: -1,
-					lastMessageCount: messageCount,
+					// S4: a byte-budget skip keeps the previous watermark and
+					// boundary (0/undefined without a trusted prior one) so the
+					// pending delta survives for a later, smaller turn.
+					lastMessageCount: digestSkipped ? watermark : messageCount,
 					modelId: agyModel,
+					digestBoundary: digestSkipped ? skipBoundary : settleBoundary,
+					digestSummaryId: settleSummaryId,
 				});
 				if (stagedAgentName) stagedAgentByConversation.set(parkedConversation, stagedAgentName);
+				// The continuation of THIS turn settles the same pending delta; it
+				// must not consume it either. See digestSkipPending.
+				if (digestSkipped) {
+					digestSkipPending.set(
+						parkedConversation,
+						compactedRotation || retryRotation
+							? "rotation"
+							: retryFresh || !existing?.conversationId
+								? "fresh"
+								: "hold",
+					);
+				} else if (digestShipped) {
+					// R2-S1: the handoff shipped on this turn; a pending marker for
+					// it is consumed here, symmetric with the clean-OK settle below.
+					digestSkipPending.delete(parkedConversation);
+				}
 				deps.log?.("park-binding", { conversation: parkedConversation }, "info");
 			}
+		} else if (digestShipped && existing?.conversationId) {
+			// R2-S1: a shipped handoff on a turn that parks in an already-bound
+			// conversation must clear its pending marker HERE: the clean-OK
+			// settle never runs for a parked turn, and a surviving "fresh" or
+			// "rotation" marker would re-ship the identical handoff on the next
+			// turn into a conversation that already received it.
+			digestSkipPending.delete(existing.conversationId);
 		}
 		return;
 	}
@@ -957,13 +1143,64 @@ async function runTurnDriver(
 			store.delete(key);
 			stagedAgentByConversation.delete(existing.conversationId);
 		} else if (outcome.status === "OK" && !outcome.aborted && !quotaError) {
+			// A parked skip bound the conversation pending this same delta: the
+			// continuation must not consume it. "hold" clears after this settle;
+			// a pending "rotation" or "fresh" handoff stays until it ships.
+			const pendingMode = digestSkipPending.get(outcome.conversationId);
+			// R2-S2/R2-S3: a gate-closed NON-continuation settle reconciles the
+			// pending marker by WHY the gate was closed. A late-result turn is a
+			// transient suppression: the pending window is NOT consumed — the
+			// previous watermark/boundary and the marker survive, so the handoff
+			// is retried later. A config-disabled digest drops the pending
+			// handoff deliberately: settle normally and clear the marker below.
+			const lateHold =
+				!isContinuation && pendingMode !== undefined && gateClosedBy === "late";
+			const holdSkip =
+				pendingMode !== undefined &&
+				(isContinuation || lateHold) &&
+				(isContinuation && pendingMode === "hold"
+					? digestSkipPending.delete(outcome.conversationId)
+					: true);
 			store.set(key, {
 				conversationId: outcome.conversationId,
 				lastStepIdx: -1,
-				lastMessageCount: messageCount,
+				// S4: a byte-budget skip settles the PREVIOUS watermark and
+				// boundary (0/undefined without a trusted prior one) so the
+				// pending delta is re-delivered by a later, smaller turn. The
+				// binding and digestSummaryId persist exactly as before.
+				lastMessageCount: digestSkipped
+					? watermark
+					: holdSkip
+						? (existing?.lastMessageCount ?? messageCount)
+						: messageCount,
 				modelId: agyModel,
+				digestBoundary: digestSkipped
+					? skipBoundary
+					: holdSkip
+						? existing?.digestBoundary
+						: settleBoundary,
+				digestSummaryId: settleSummaryId,
 			});
 			if (stagedAgentName) stagedAgentByConversation.set(outcome.conversationId, stagedAgentName);
+			// The skipped delta stays marked pending on the conversation it will
+			// be retried against; a shipped digest clears any stale marker.
+			if (digestSkipped) {
+				digestSkipPending.set(
+					outcome.conversationId,
+					compactedRotation || retryRotation
+						? "rotation"
+						: retryFresh || !existing?.conversationId
+							? "fresh"
+							: "hold",
+				);
+			} else if (digestShipped) {
+				digestSkipPending.delete(outcome.conversationId);
+			} else if (!isContinuation && gateClosedBy === "config") {
+				// R2-S2: the digest is disabled by configuration for this turn: the
+				// pending handoff is deliberately dropped together with the normally
+				// settled window (no stale marker, no later duplicate re-ship).
+				digestSkipPending.delete(outcome.conversationId);
+			}
 		}
 		// A failed or aborted turn on the SAME conversation keeps the pre-turn
 		// record: whether the prompt actually landed in agy's DB is not
