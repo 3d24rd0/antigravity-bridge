@@ -143,6 +143,13 @@ export const STREAM_JSON_PROMPT_CAP = 25_000;
 /** Headroom under the cap for prompt framing. */
 export const STREAM_JSON_PROMPT_MARGIN = 4_096;
 
+/** Smallest digest budget under which the delta truncator can still mark a
+ *  cut ("[truncated]" + separator + one kept byte). Below it
+ *  buildContextDigest returns "" even when delta parts are pending; the
+ *  provider uses this floor to tell a squeezed byte-budget skip apart from a
+ *  genuinely empty delta window (S4: a skip must not consume the delta). */
+export const DIGEST_TRUNCATION_FLOOR_CHARS = 13;
+
 /** Per-engine digest cap. ACP ships the digest as an embeddedContext
  *  resource block: no prompt cap applies, so the default cap stands. On
  *  stream-json the digest rides inline in the prompt, so it must fit under
