@@ -1,0 +1,522 @@
+// Discover models from `agy models` and project them into pi's Model shape so
+// they appear in the /model picker as antigravity/<slug>.
+//
+// agy prints TWO columns per line: "<slug>  <display label>". --model takes
+// ONLY the slug (col 1); the label is display-only. Verified live 2026-10:
+//   gemini-4-argon-high       Gemini 4 Argon (High)       (+ -medium, -low)
+//   gemini-3.8-flash-high     Gemini 3.8 Flash (High)
+//   gemini-3.8-flash-medium   Gemini 3.8 Flash (Medium)   (+ -low)
+//   claude-opus-5-5-high      Claude Opus 5.5 (High)      (+ -medium, -low)
+//   claude-sonnet-5-5-high    Claude Sonnet 5.5 (High)     (+ -medium, -low)
+//
+// Gemini AND Claude models are collapsed to a BASE slug (gemini-4-argon,
+// gemini-3.8-flash, claude-sonnet-5-5) and exposed with a thinking-effort
+// toggle whose levels match exactly the tiers agy offers that base (Claude 5.5,
+// Gemini 3.8 Flash, and Gemini 4 Argon all accept low/medium/high; Gemini 4
+// Hydrogen adds xhigh). The picked level is sent as agy --effort; a bare base
+// slug is INVALID on its own (agy: "requires --effort"), so effort is always
+// passed. Families agy lists with a single tier, and families whose
+// base+--effort behaviour is unverified, keep agy's exact slug and carry no
+// toggle, so nothing unsupported is ever risked.
+// Google's Antigravity subscription bills all of these through agy.
+
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { Api, Model, ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
+
+const DISCOVERY_TIMEOUT_MS = 8_000;
+
+/** Stdout ceiling for `agy models`. Real output is a few KB of ASCII slugs;
+ *  anything past 1 MiB is a runaway process. Fail closed to "" so the
+ *  fallback catalog engages instead of letting the buffer grow without
+ *  limit. The check counts decoded string length (UTF-16 code units), not
+ *  raw bytes — a deliberate proxy, since the margin between a few KB of
+ *  real output and 1 MiB dwarfs any encoding difference. */
+export const MODELS_OUTPUT_CAP_BYTES = 1024 * 1024;
+
+/** Reasoning-effort tiers agy accepts via --effort. */
+export type AgyEffort = "low" | "medium" | "high" | "xhigh";
+
+/** low < medium < high < xhigh, for sorting/clamping. */
+const EFFORT_RANK: Record<AgyEffort, number> = { low: 0, medium: 1, high: 2, xhigh: 3 };
+
+/** pi thinking-effort order mirrors agy's, for clamping. */
+export const AGY_EFFORT_ORDER: readonly AgyEffort[] = ["low", "medium", "high", "xhigh"];
+
+/** Map pi's thinking level onto one of the tiers `efforts` the base actually
+ *  supports, clamping to the nearest available. agy rejects an effort tier a
+ *  base doesn't list (e.g. medium on Pro), so we never emit one. Shared by the
+ *  provider turns AND the AskAntigravity delegation tool (thinking/effort
+ *  params): one vocabulary, one clamp. When pi sends no level we fall to the
+ *  first available tier. */
+export function toAgyEffort<E extends AgyEffort>(
+	reasoning: ThinkingLevel | undefined,
+	efforts: readonly E[],
+): E {
+	let candidate: AgyEffort;
+	switch (reasoning) {
+		case "minimal":
+		case "low":
+			candidate = "low";
+			break;
+		case "medium":
+			candidate = "medium";
+			break;
+		case "high":
+			candidate = "high";
+			break;
+		case "xhigh":
+			candidate = "xhigh";
+			break;
+		case "max":
+			// pi offers max; agy has no such tier. Clamp to its top one.
+			candidate = "xhigh";
+			break;
+		default:
+			candidate = efforts[0] ?? "low";
+	}
+	if (efforts.includes(candidate as E)) return candidate as E;
+	const i = AGY_EFFORT_ORDER.indexOf(candidate);
+	for (let j = i; j < AGY_EFFORT_ORDER.length; j++) {
+		const level = AGY_EFFORT_ORDER[j] as AgyEffort;
+		if ((efforts as readonly AgyEffort[]).includes(level)) return level as E;
+	}
+	for (let j = i - 1; j >= 0; j--) {
+		const level = AGY_EFFORT_ORDER[j] as AgyEffort;
+		if ((efforts as readonly AgyEffort[]).includes(level)) return level as E;
+	}
+	return (efforts[0] ?? "low") as E;
+}
+
+/** Split an agy slug into (base, tier). tier is null when the slug has no
+ *  tier suffix - a shape only unverified families should produce now, and those
+ *  stay whole. Every tier agy publishes belongs here, xhigh included:
+ *  omitting xhigh turned Gemini 4 Hydrogen's XHigh tier into a second,
+ *  toggle-less model instead of an effort level. Every Claude slug carries a
+ *  tier suffix and collapses to its base. */
+const TIER_RE = /^(.+)-(xhigh|high|medium|low)$/;
+
+/** agy emits clean slug ids (gemini-3.6-flash-high). Validate col1 of each
+ *  line so a banner / auth / "Fetching models…" line can't register as a
+ *  model, and a leading-dash token (e.g. "-high") can't reach agy's flag
+ *  parser as --model. First char must be alphanumeric; the slug must contain
+ *  at least one hyphen (every real agy slug does: family-version-name), which
+ *  also drops a prose banner word split out of col1 ("Available"). */
+const MODEL_LINE_RE = /^[A-Za-z0-9][A-Za-z0-9._]*-[A-Za-z0-9._-]*$/;
+
+/** Model families VERIFIED to accept base-slug + --effort. Only these collapse
+ *  to a base slug with a thinking toggle. Any other family stays as agy's exact
+ *  qualified slug (always valid on its own), so an unknown or fixed-thinking
+ *  family degrades safely instead of forcing an unsupported --effort. Add a
+ *  family here only after confirming base+--effort is accepted for it.
+ *  Claude 5.5 verified live 2026-10: base+--effort accepted; a bare base is
+ *  rejected ("requires --effort"). */
+const EFFORT_CAPABLE_FAMILIES: readonly RegExp[] = [/^gemini-/, /^claude-/];
+
+
+export interface AgyModelEntry {
+	/** Exact agy --model string to pass: a base slug ("gemini-3.8-flash") when
+	 *  effort-driven, else agy's full qualified slug (unverified family). */
+	full: string;
+	/** pi model id, e.g. "gemini-3-8-flash". */
+	id: string;
+	/** Present iff this is an effort-driven base slug. Lists the tiers agy
+	 *  accepts for it; pi's thinking toggle picks among them and we always pass
+	 *  --effort. Absent => fixed model, never pass --effort. */
+	efforts?: AgyEffort[];
+}
+
+/** Spawn a read-only agy listing subcommand and return its raw stdout text.
+ *  Returns "" on any failure (non-zero exit, spawn error, watchdog timeout,
+ *  or output cap). Bounded by timeoutMs (default DISCOVERY_TIMEOUT_MS) so a
+ *  hung agy (auth prompt, network stall) can't block the caller, and by
+ *  capBytes (default MODELS_OUTPUT_CAP_BYTES) so a runaway agy can't grow
+ *  the buffer without limit. Shared by the model catalog (spawned ONCE per
+ *  load, provider + tool catalog), the agent roster, and the quota fetch
+ *  (which passes its own 30s budget: /usage answers in ~10s live). */
+export async function spawnAgyRaw(
+	binary: string,
+	args: string[],
+	timeoutMs: number = DISCOVERY_TIMEOUT_MS,
+	capBytes: number = MODELS_OUTPUT_CAP_BYTES,
+): Promise<string> {
+	try {
+		return await new Promise<string>((resolve, reject) => {
+			const proc = spawn(binary, args, {
+				stdio: ["ignore", "pipe", "ignore"],
+				shell: false,
+			});
+			proc.stdout?.setEncoding("utf8");
+			let out = "";
+			let done = false;
+			let capped = false;
+			const finish = (v: string) => {
+				if (done) return;
+				done = true;
+				clearTimeout(watchdog);
+				resolve(v);
+			};
+			proc.stdout?.on("data", (d: string) => {
+				if (capped) return;
+				if (out.length + d.length > capBytes) {
+					capped = true;
+					try {
+						proc.kill("SIGKILL");
+					} catch {
+						/* already gone */
+					}
+					finish("");
+					return;
+				}
+				out += d;
+			});
+			proc.on("error", (err) => {
+				clearTimeout(watchdog);
+				reject(err);
+			});
+			proc.on("close", (code) => finish(code === 0 ? out : ""));
+			const watchdog = setTimeout(() => {
+				try {
+					proc.kill("SIGKILL");
+				} catch {
+					/* already gone */
+				}
+				finish("");
+			}, timeoutMs);
+		});
+	} catch {
+		return "";
+	}
+}
+
+/** Spawn `agy models`: the model catalog listing. */
+export async function spawnAgyModelsRaw(binary: string): Promise<string> {
+	return spawnAgyRaw(binary, ["models"]);
+}
+
+// --- catalog cache ----------------------------------------------------------
+//
+// `agy models` can take seconds (OAuth refresh, cold start) and its output
+// rarely changes. We persist it to ~/.pi/agent/antigravity-bridge/models-
+// cache.json with a short TTL so reloads serve instantly and only re-spawn in
+// the background when stale. Only successful (non-empty) output is cached, so
+// a broken agy is never sticky.
+
+export const MODELS_CACHE_TTL_MS = 5 * 60_000;
+
+const MODELS_CACHE_PATH = path.join(
+	os.homedir(),
+	".pi",
+	"agent",
+	"antigravity-bridge",
+	"models-cache.json",
+);
+
+interface ModelsCache {
+	raw: string;
+	savedAt: number;
+}
+
+/** Read and validate the models cache. Returns null when missing or corrupt. */
+function readModelsCache(cachePath: string = MODELS_CACHE_PATH): ModelsCache | null {
+	try {
+		const parsed = JSON.parse(fs.readFileSync(cachePath, "utf8")) as unknown;
+		if (
+			parsed &&
+			typeof parsed === "object" &&
+			!Array.isArray(parsed) &&
+			typeof (parsed as ModelsCache).raw === "string" &&
+			typeof (parsed as ModelsCache).savedAt === "number"
+		) {
+			return parsed as ModelsCache;
+		}
+	} catch {
+		/* missing or corrupt: treat as no cache */
+	}
+	return null;
+}
+
+/** Atomically persist the raw catalog text (temp + rename, mode 0o600).
+ *  Best-effort: a write failure just means the next load re-spawns. */
+function writeModelsCache(raw: string, cachePath: string = MODELS_CACHE_PATH): void {
+	fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+	const tmp = `${cachePath}.${process.pid}.tmp`;
+	try {
+		fs.writeFileSync(tmp, JSON.stringify({ raw, savedAt: Date.now() }, null, 2) + "\n", {
+			mode: 0o600,
+		});
+		fs.renameSync(tmp, cachePath);
+	} catch {
+		try {
+			fs.unlinkSync(tmp);
+		} catch {
+			/* nothing to clean */
+		}
+	}
+}
+
+/** Read agy's CURRENT catalog, for a live refresh (pi's refreshModels) rather
+ *  than a session-start snapshot.
+ *
+ *  Fresh cache: returned as-is, no spawn - a 5-minute window cannot hide a
+ *  change, and a refresh callback must stay cheap. Stale or missing cache:
+ *  spawn agy once (bounded by the same watchdog + cap as startup) and persist
+ *  the result. agy failure returns the last known raw so a broken CLI never
+ *  empties the picker; only a first-ever load with no cache yields "". */
+export async function refreshCatalogRaw(
+	binary: string,
+	cachePath: string = MODELS_CACHE_PATH,
+): Promise<string> {
+	const cache = readModelsCache(cachePath);
+	if (cache && Date.now() - cache.savedAt < MODELS_CACHE_TTL_MS) return cache.raw;
+	const raw = await spawnAgyModelsRaw(binary);
+	if (raw) {
+		writeModelsCache(raw, cachePath);
+		return raw;
+	}
+	return cache?.raw ?? "";
+}
+
+/** Fire-and-forget refresh of the models cache. Called on a stale-cache load so
+ *  the next load sees fresh data without this one having to wait on agy. */
+export function refreshModelsInBackground(
+	binary: string,
+	cachePath: string = MODELS_CACHE_PATH,
+): void {
+	void spawnAgyModelsRaw(binary)
+		.then((raw) => {
+			if (raw) writeModelsCache(raw, cachePath);
+		})
+		.catch(() => {
+			/* best effort: leave the stale cache in place */
+		});
+}
+
+/** Load the raw `agy models` text for catalog derivation, optimized for load
+ *  time:
+ *    - Fresh cache (< MODELS_CACHE_TTL_MS): return it, no spawn.
+ *    - Stale cache (>= TTL): return it instantly, refresh in the background.
+ *    - No cache: spawn once (blocks), persist. First-ever load only.
+ *
+ *  pi registers providers with a static model list, so a background refresh only
+ *  updates the cache for the NEXT load; the current session keeps whatever this
+ *  returned. The provider falls back to FALLBACK_MODELS when the raw yields no
+ *  Gemini entries (agy missing/auth-failed). */
+export async function loadModelCatalogRaw(
+	binary: string,
+	cachePath: string = MODELS_CACHE_PATH,
+): Promise<string> {
+	const cache = readModelsCache(cachePath);
+	if (cache) {
+		if (Date.now() - cache.savedAt < MODELS_CACHE_TTL_MS) return cache.raw;
+		refreshModelsInBackground(binary, cachePath);
+		return cache.raw;
+	}
+	// No cache: populate it. Blocks once; later loads hit the cache above.
+	const raw = await spawnAgyModelsRaw(binary);
+	if (raw) writeModelsCache(raw, cachePath);
+	return raw;
+}
+
+/** Parse raw `agy models` text into the provider's model entries.
+ *
+ *  Effort-driven bases (>= 2 tier variants in the catalog, verified
+ *  effort-capable family) collapse to one BASE-slug entry carrying the tiers
+ *  they accept. Models with 0 or 1 tier variants keep agy's exact qualified
+ *  slug: without a verified effort-capable family match, --effort is never
+ *  risked. Hidden families are dropped outright. Insertion order of
+ *  first-seen bases is preserved. */
+export function entriesFromRaw(raw: string): AgyModelEntry[] {
+	// agy prints TWO columns: "<slug>  <display label>". --model takes only the
+	// slug, so split col1 and validate THAT; the label is display-only. A
+	// bare-slug line (no whitespace) splits to itself, so this also tolerates
+	// the legacy one-column shape.
+	const groups = new Map<string, { lines: string[]; tiers: Set<AgyEffort> }>();
+	for (const line of raw.split("\n")) {
+		const slug = line.trim().split(/\s+/)[0] ?? "";
+		if (!slug || !MODEL_LINE_RE.test(slug)) continue;
+		const m = TIER_RE.exec(slug);
+		const base = m ? (m[1] as string) : slug;
+		const tier = m ? (m[2] as AgyEffort) : null;
+		let g = groups.get(base);
+		if (!g) {
+			g = { lines: [], tiers: new Set<AgyEffort>() };
+			groups.set(base, g);
+		}
+		g.lines.push(slug);
+		if (tier) g.tiers.add(tier);
+	}
+	const entries: AgyModelEntry[] = [];
+	for (const [base, g] of groups) {
+		const efforts = [...g.tiers].sort((a, b) => EFFORT_RANK[a] - EFFORT_RANK[b]);
+		if (efforts.length >= 2 && EFFORT_CAPABLE_FAMILIES.some((re) => re.test(base))) {
+			entries.push({ full: base, id: slugify(base), efforts });
+		} else {
+			for (const line of g.lines) entries.push({ full: line, id: slugify(line) });
+		}
+	}
+	return entries.filter((e) => e.id.length > 0);
+}
+
+/** Run `agy models`, return parsed model entries. Returns [] on any failure
+ *  (non-fatal  -  the provider falls back to a hardcoded set). */
+export async function discoverAgyModels(binary: string): Promise<AgyModelEntry[]> {
+	return entriesFromRaw(await spawnAgyModelsRaw(binary));
+}
+
+/** "Gemini 3.6 Flash (Medium)" -> "gemini-3-6-flash-medium".
+ *  Lowercase, non-alphanumerics -> "-", collapsed, trimmed. */
+export function slugify(full: string): string {
+	return full
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+}
+
+/** Build the thinkingLevelMap for an effort-driven base: hide "off" and
+ *  "minimal" always (agy has no no-thinking mode; a base REQUIRES an effort),
+ *  map every tier the base lists to its own name (the provider value agy
+ *  takes), and hide the rest with null. pi's getSupportedThinkingLevels treats
+ *  a null value as hidden - and xhigh/max as unsupported unless the map
+ *  mentions them - so the toggle shows exactly agy's stops for THIS model:
+ *  Hydrogen low/medium/high/xhigh, Argon low/medium/high. */
+function thinkingLevelMapFor(efforts: readonly AgyEffort[]): ThinkingLevelMap {
+	const map: Record<string, string | null> = { off: null, minimal: null };
+	for (const level of AGY_EFFORT_ORDER) map[level] = efforts.includes(level) ? level : null;
+	return map as ThinkingLevelMap;
+}
+
+/** Determine the context window ceiling based on model family.
+ *  - Claude (Sonnet / Opus): 200k
+ *  - Gemini (Flash / Pro / Argon): 1M
+ *  - GPT-OSS / other models: 128k
+ */
+export function contextWindowFor(entry: AgyModelEntry): number {
+	const name = (entry.full || entry.id).toLowerCase();
+	if (name.includes("claude")) {
+		return 200_000;
+	}
+	if (name.includes("gemini")) {
+		return 1_000_000;
+	}
+	if (name.includes("gpt-oss")) {
+		return 128_000;
+	}
+	return 200_000;
+}
+
+export interface ToPiModelOptions {
+	engineSuffix?: "acp" | "cli";
+	engineLabel?: "ACP" | "CLI";
+}
+
+/** Project an agy entry to pi's Model shape. `input` advertises accepted
+ *  inputs: text-only (default) or text+image. Both engines accept images now:
+ *  ACP forwards the blocks natively (probe 2026-09-03), and the stream-json
+ *  prompt is text-only, so the driver stages the pixels on disk and points the
+ *  model at them. */
+export function toPiModel(
+	entry: AgyModelEntry,
+	input: Array<"text" | "image"> = ["text"],
+	options: ToPiModelOptions = {},
+): Model<Api> {
+	const effortDriven = !!entry.efforts && entry.efforts.length > 0;
+	const id = options.engineSuffix ? `${entry.id}-${options.engineSuffix}` : entry.id;
+	const name = options.engineLabel ? `${entry.full} (${options.engineLabel})` : entry.full;
+	return {
+		id,
+		name,
+		api: "agy-bridge" as Api,
+		provider: "antigravity",
+		// baseUrl/apiKey are not used (streamSimple intercepts everything), but
+		// pi requires non-empty values. The "agy-bridge" api string is a custom
+		// sentinel that no built-in provider claims, so it can never collide.
+		baseUrl: "agy-bridge://antigravity",
+		// reasoning=true only for effort-driven bases => pi shows the toggle.
+		// Unverified families get no toggle: --effort support is unknown, so
+		// none is ever sent.
+		reasoning: effortDriven,
+		...(effortDriven ? { thinkingLevelMap: thinkingLevelMapFor(entry.efforts!) } : {}),
+		// Input advertising comes from the caller (engine-dependent): the ACP
+		// engine forwards image blocks; advertising images on the stream engine
+		// would let pi offer image attach only for them to be dropped.
+		input,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: contextWindowFor(entry),
+		maxTokens: 65_536,
+	};
+}
+
+/** pi's registerProvider takes a narrow model definition, not the full Model
+ *  object. One mapper serves the static registration AND the live refresh, so a
+ *  field cannot be copied on one path and forgotten on the other. */
+export function toRegistrationModel(m: Model<Api>) {
+	return {
+		id: m.id,
+		name: m.name,
+		api: m.api,
+		reasoning: m.reasoning,
+		thinkingLevelMap: m.thinkingLevelMap,
+		input: m.input,
+		cost: m.cost,
+		contextWindow: m.contextWindow,
+		maxTokens: m.maxTokens,
+	};
+}
+
+/** Expand agy model entries to explicit engine variants for Pi's /model picker:
+ *  - Models supporting ACP (Gemini) register both `-acp` and `-cli` variants.
+ *  - Models supporting only CLI (Claude, GPT-OSS) register `-cli` variant.
+ */
+export function expandAgyModels(entries: readonly AgyModelEntry[]): Model<Api>[] {
+	const out: Model<Api>[] = [];
+	for (const e of entries) {
+		const supportsAcp = isAcpCapableModel(e);
+		if (supportsAcp) {
+			out.push(toPiModel(e, ["text", "image"], { engineSuffix: "acp", engineLabel: "ACP" }));
+			out.push(toPiModel(e, ["text", "image"], { engineSuffix: "cli", engineLabel: "CLI" }));
+		} else {
+			out.push(toPiModel(e, ["text", "image"], { engineSuffix: "cli", engineLabel: "CLI" }));
+		}
+	}
+	return out;
+}
+
+/** Parse model id to determine base model slug and any forced engine.
+ *  e.g. "gemini-4-argon-acp" -> { baseId: "gemini-4-argon", forcedEngine: "acp" }
+ *       "gemini-4-argon-cli" -> { baseId: "gemini-4-argon", forcedEngine: "stream-json" }
+ *       "gemini-4-argon"     -> { baseId: "gemini-4-argon" }
+ */
+export function parseModelEngine(modelId: string): { baseId: string; forcedEngine?: "acp" | "stream-json" } {
+	if (modelId.endsWith("-acp")) {
+		return { baseId: modelId.slice(0, -4), forcedEngine: "acp" };
+	}
+	if (modelId.endsWith("-cli")) {
+		return { baseId: modelId.slice(0, -4), forcedEngine: "stream-json" };
+	}
+	return { baseId: modelId };
+}
+
+/** Fallback catalog used when `agy models` fails at load (binary missing,
+ *  auth not yet done, network stall). Keeps the picker populated so the user
+ *  can still select a model and get a clear runtime error instead of an empty
+ *  list. Update these when agy ships new Gemini versions. */
+export const FALLBACK_MODELS: AgyModelEntry[] = [
+	{ full: "gemini-4-argon", id: "gemini-4-argon", efforts: ["low", "medium", "high"] },
+	{ full: "gemini-3.8-flash", id: "gemini-3-8-flash", efforts: ["low", "medium", "high"] },
+	{ full: "claude-sonnet-5-5", id: "claude-sonnet-5-5", efforts: ["low", "medium", "high"] },
+	{ full: "claude-opus-5-5", id: "claude-opus-5-5", efforts: ["low", "medium", "high"] },
+];
+
+/** Model families capable of running on the official ACP server.
+ *  As verified live, ACP currently supports only Gemini models under Google AI Pro auth.
+ *  Claude (Sonnet, Opus) and other non-Gemini models reject with -32602 on ACP and
+ *  require the stream-json CLI engine. */
+export function isAcpCapableModel(model: string | AgyModelEntry): boolean {
+	const name = typeof model === "string" ? model : (model.full || model.id);
+	return name.toLowerCase().startsWith("gemini-");
+}
+
+

@@ -1,0 +1,79 @@
+{
+  "name": "@3d24rd0/pi-antigravity-bridge",
+  "version": "1.4.1",
+  "description": "Antigravity's models in Pi, through Google's own agy CLI and ACP server: no reimplemented API, no impersonated client. Pi's tools reach the model, so it works in your repo. Subscription, no API key.",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./src/entry.ts"
+    ],
+    "image": "https://cdn.jsdelivr.net/gh/3d24rd0/antigravity-bridge@main/assets/logo-1024.jpg"
+  },
+  "files": [
+    "src",
+    "assets",
+    "docs",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^1.4.0",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@earendil-works/pi-tui": "^1.4.0",
+    "@types/node": "^26.6.6",
+    "typebox": "^1.3.4",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5",
+    "yaml": "^2.9.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "antigravity",
+    "antigravity-acp",
+    "agy",
+    "gemini",
+    "google",
+    "google-acp",
+    "acp",
+    "agent-client-protocol",
+    "mcp",
+    "mcp-server",
+    "provider",
+    "streaming",
+    "claude",
+    "antigravity-cli"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/3d24rd0/antigravity-bridge.git"
+  },
+  "homepage": "https://github.com/3d24rd0/antigravity-bridge#readme",
+  "author": {
+    "name": "Eduardo Martínez Catalá (3d24rd0)",
+    "email": "3d24rd0@gmail.com",
+    "url": "https://github.com/3d24rd0"
+  }
+}

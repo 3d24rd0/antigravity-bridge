@@ -47,8 +47,18 @@ const model: Model<Api> = {
 	maxTokens: 65_536,
 };
 
+/** Deterministic stamp derived from the text: the digest boundary is a
+ *  role:timestamp fingerprint, so a Date.now() stamp would change between
+ *  turns that replay the same message list and every turn would look like a
+ *  transcript rewrite (watermark reset). */
+function stamp(text: string): number {
+	let h = 0;
+	for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0;
+	return 1_700_000_000_000 + Math.abs(h);
+}
+
 function user(text: string): { role: "user"; content: string; timestamp: number } {
-	return { role: "user", content: text, timestamp: Date.now() };
+	return { role: "user", content: text, timestamp: stamp(text) };
 }
 
 function contextWith(messages: string[], systemPrompt?: string): TranscriptContext {

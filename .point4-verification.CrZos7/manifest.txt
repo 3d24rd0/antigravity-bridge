@@ -1,0 +1,4 @@
+scratch=/Users/eduardomartinez/Documents/GitHub/pi-extensions/.point4-verification.CrZos7
+baseline_provider=a90061015a2bbed89b2759f1c8d3247b7a97f25f
+candidate_provider=59ffc1b7d38fae70e6f19022406b4fc6cb0e7698
+baseline_commit=f93ad3b9ea0d72b7a9c017c426a076999e0266b5

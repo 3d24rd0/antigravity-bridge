@@ -1,0 +1,487 @@
+// H1 regression: stream-json frames that split across pipe chunks must be
+// buffered and reassembled, not dropped. Drives StreamDriver against the fake
+// agy in tests/helpers/fake-agy-bin/agy (resolved via PATH), whose reply is
+// deliberately split across two stdout writes mid-line.
+
+import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, test } from "vitest";
+import { StreamDriver } from "../src/driver.js";
+import type { DriverActivity } from "../src/driver-types.js";
+
+const FAKE_BIN_DIR = path.join(import.meta.dirname, "helpers", "fake-agy-bin");
+
+describe("stream-json driver stdout framing (H1)", () => {
+	test("frames split across pipe chunks are reassembled", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "hi",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const activities: DriverActivity[] = [];
+		const collecting = (async () => {
+			for (;;) {
+				const activity = await handle.next();
+				if (activity === null) return;
+				activities.push(activity);
+			}
+		})();
+		const outcome = await handle.outcome;
+		await collecting;
+
+		// Pre-fix, the split agent_response frame was dropped whole and the
+		// response fell back to the result body ("RESULT-BODY").
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.conversationId, "conv-777");
+		assert.equal(outcome.response, "HALF-ONE-HALF-TWO");
+		const text = activities
+			.filter((a): a is Extract<DriverActivity, { type: "text" }> => a.type === "text")
+			.map((a) => a.delta)
+			.join("");
+		assert.equal(text, "HALF-ONE-HALF-TWO");
+	});
+});
+
+describe("stream-json driver: echoed system messages", () => {
+	test("a <SYSTEM_MESSAGE> block split inside the marker never reaches the transcript", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "ECHO-SYSTEM-MESSAGE",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const activities: DriverActivity[] = [];
+		const collecting = (async () => {
+			for (;;) {
+				const activity = await handle.next();
+				if (activity === null) return;
+				activities.push(activity);
+			}
+		})();
+		const outcome = await handle.outcome;
+		await collecting;
+
+		// The block is 40 characters of notification; the answer around it is not.
+		const text = activities
+			.filter((a): a is Extract<DriverActivity, { type: "text" }> => a.type === "text")
+			.map((a) => a.delta)
+			.join("");
+		assert.equal(text, "BEFORE  AFTER");
+		assert.equal(outcome.response, "BEFORE  AFTER");
+		assert.equal(/SYSTEM_MESSAGE/.test(text), false);
+	});
+});
+
+describe("stream-json driver: image staging", () => {
+	test("the prompt points the model at the staged files", async () => {
+		// The CLI turn input is text-only, so the pixels have to reach the model
+		// some other way. The fake answers NOTE-SEEN only when the staging note
+		// actually made it onto the wire.
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "hi",
+			images: [{ data: Buffer.from("png-bytes").toString("base64"), mimeType: "image/png" }],
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const draining = (async () => {
+			for (;;) {
+				if ((await handle.next()) === null) return;
+			}
+		})();
+		const outcome = await handle.outcome;
+		await draining;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.response, "NOTE-SEEN");
+	});
+});
+
+describe("stream-json driver frame ceiling", () => {
+	test("a no-newline flood over the frame cap fails the turn instead of buffering forever", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "OVERFLOW-FLOOD",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.match(outcome.error ?? "", /frame overflow/i);
+	}, 30_000);
+});
+
+describe("stream-json driver stdout noise guard", () => {
+	test("a noise line and a glued noise fragment do not corrupt the turn", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "NOISE-GLUE",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.conversationId, "conv-noise");
+		assert.equal(outcome.response, "AFTER-NOISE");
+	});
+});
+
+describe("stream-json driver shutdown latch", () => {
+	// Parity with the ACP driver fix: pi fires session_shutdown on /new,
+	// /resume and /fork, so a closed driver must respawn on the next turn
+	// instead of rejecting forever (regression 2026-09-07).
+	test("a turn after close('shutdown') respawns instead of rejecting forever", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const opts = {
+			prompt: "hi",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits" as const,
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		};
+		const h1 = await driver.run(opts);
+		assert.equal((await h1.outcome).status, "OK");
+
+		await driver.close("shutdown");
+
+		const h2 = await driver.run(opts);
+		const o2 = await h2.outcome;
+		assert.equal(o2.status, "OK");
+		assert.equal(o2.error, undefined);
+	});
+
+	test("close('recycle') mid-turn settles the turn with a clean error", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "please HANG",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 10,
+			inactivityMin: 10,
+		});
+		for (let i = 0; i < 80 && driver.state !== "running"; i++) {
+			await new Promise((r) => setTimeout(r, 25));
+		}
+		assert.equal(driver.state, "running", "turn should be running before the recycle");
+		driver.close("recycle", "session switch");
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.match(outcome.error ?? "", /recycled mid-turn \(session switch\)/);
+	});
+});
+
+describe("stream-json driver zero timeouts disable both caps", () => {
+	test("timeoutMin/inactivityMin 0 keep a hung turn running", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "HANG",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0,
+			inactivityMin: 0,
+		});
+		// A missing guard arms setTimeout(fn, 0) and settles the turn as ERROR
+		// inside this window; the skipped caps leave it running.
+		const raced = await Promise.race([
+			handle.outcome.then((o) => o.status),
+			new Promise<"running">((r) => setTimeout(() => r("running"), 400)),
+		]);
+		assert.equal(raced, "running");
+		await driver.close("shutdown");
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+	});
+});
+
+describe("stream-json driver issue-#2 evidence fields", () => {
+	test("a silent over-cap drop (SUCCESS, no steps, zero usage) reports modelOutputSeen=false", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "SILENT-DROP",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.sawResult, true);
+		assert.equal(outcome.modelOutputSeen, false);
+		await driver.close("shutdown");
+	});
+
+	test("a real text turn reports modelOutputSeen=true and sawResult=true", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "hi",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.sawResult, true);
+		assert.equal(outcome.modelOutputSeen, true);
+		await driver.close("shutdown");
+	});
+
+	test("a deadline stall with no result frame sets deadline and sawResult=false", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "please HANG",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 10,
+			inactivityMin: 0.05,
+		});
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.equal(outcome.sawResult, false);
+		assert.equal(outcome.deadline, "stall");
+		await driver.close("shutdown");
+	}, 30_000);
+});
+
+describe("stream-json driver stderr redaction", () => {
+	// Regression (peer review 2026-09): the raw stderr tail rode verbatim into
+	// the turn-failure message (user transcript + daily log). A secret agy
+	// printed to stderr must come out redacted.
+	test("a secret in agy stderr never reaches the turn error", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "STDERR-LEAK",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.ok(outcome.error);
+		assert.equal(outcome.error.includes("AIzaSyA"), false, "raw secret absent");
+		assert.ok(outcome.error.includes("<redacted>"), "secret is redacted");
+		await driver.close("shutdown");
+	});
+});
+
+describe("stream-json driver plan-mode skip-permission gating", () => {
+	// The skip-permissions flag is never passed in plan mode (it would
+	// auto-approve plan mode's own approval gate). #recycleCause compares
+	// the stored EFFECTIVE value, so two identical plan-mode requests must
+	// reuse the process; comparing effective vs raw recycled every turn.
+	test("two identical plan-mode turns reuse the process", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const base = {
+			prompt: "KEEP-ALIVE",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "plan" as const,
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		};
+		const first = await driver.run(base);
+		const firstOutcome = await first.outcome;
+		assert.equal(firstOutcome.status, "OK");
+		assert.equal(firstOutcome.conversationId, "conv-777");
+		const second = await driver.run({
+			...base,
+			conversationId: firstOutcome.conversationId,
+		});
+		const secondOutcome = await second.outcome;
+		assert.equal(secondOutcome.status, "OK");
+		const stats = driver.snapshot().stats;
+		assert.equal(stats.recycles, 0, "plan turns must not recycle");
+		assert.equal(stats.reused, 1, "second plan turn reuses the process");
+		assert.equal(stats.spawns, 1, "one process serves both turns");
+		await driver.close("shutdown");
+	});
+
+	test("a raw knob flip stays invisible in plan mode", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const first = await driver.run({
+			prompt: "KEEP-ALIVE",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "plan",
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		const firstOutcome = await first.outcome;
+		assert.equal(firstOutcome.status, "OK");
+		const second = await driver.run({
+			prompt: "KEEP-ALIVE",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "plan",
+			skipPermissions: false,
+			conversationId: firstOutcome.conversationId,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		});
+		await second.outcome;
+		const stats = driver.snapshot().stats;
+		assert.equal(stats.recycles, 0, "raw knob flip stays invisible in plan mode (effective unchanged)");
+		await driver.close("shutdown");
+	});
+});
+
+describe("stream-json driver: parked time and the turn cap", () => {
+	test("parked time does not consume the overall turn budget", async () => {
+		// A human-gated call (an approval, an ask_user_question) legitimately
+		// blocks for minutes. The cap used to be armed once and cleared only at
+		// settle, so parked time counted against agy's thinking budget and a
+		// long escalation died mid-turn.
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "HANG",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0.01, // 600 ms
+			inactivityMin: 0,
+		});
+		handle.pushExternal({ type: "bridge_call", callId: "call-park", name: "AskClaude", args: {} });
+
+		const parked = await Promise.race([
+			handle.outcome.then(() => "settled" as const),
+			new Promise<"running">((r) => setTimeout(() => r("running"), 1500)),
+		]);
+		assert.equal(parked, "running", "the cap must not fire while the call is parked");
+
+		// Unpark: the remaining budget resumes and fires.
+		driver.kickIdle();
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.match(outcome.error ?? "", /turn timeout/);
+		await driver.close("shutdown");
+	});
+});
+
+describe("stream-json driver: binary resolution (AGY_BIN)", () => {
+	test("spawns AGY_BIN instead of PATH agy when set", async () => {
+		const prevPath = process.env.PATH;
+		const prevBin = process.env.AGY_BIN;
+		const tmpDir = mkdtempSync(path.join(os.tmpdir(), "driver-agy-bin-"));
+		const customBin = path.join(tmpDir, "custom-agy");
+		writeFileSync(
+			customBin,
+			[
+				"#!/usr/bin/env bash",
+				"read -r _line",
+				"printf '%s\\n' '{\"event\":\"init\",\"init\":{\"conversation_id\":\"conv-custom-bin\"}}'",
+				"printf '%s\\n' '{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\",\"response\":\"CUSTOM-AGY-BIN\",\"conversation_id\":\"conv-custom-bin\"}}'",
+			].join("\n"),
+			"utf8",
+		);
+		chmodSync(customBin, 0o755);
+
+		process.env.PATH = `${FAKE_BIN_DIR}:${prevPath ?? ""}`;
+		process.env.AGY_BIN = customBin;
+		const driver = new StreamDriver();
+		try {
+			const handle = await driver.run({
+				prompt: "hi",
+				cwd: process.cwd(),
+				model: "gemini-3.8-flash",
+				mode: "accept-edits",
+				skipPermissions: true,
+				timeoutMin: 0.5,
+				inactivityMin: 0.5,
+			});
+			const outcome = await handle.outcome;
+			assert.equal(outcome.status, "OK");
+			assert.equal(outcome.conversationId, "conv-custom-bin");
+			assert.equal(outcome.response, "CUSTOM-AGY-BIN");
+		} finally {
+			await driver.close("shutdown");
+			if (prevBin === undefined) delete process.env.AGY_BIN;
+			else process.env.AGY_BIN = prevBin;
+			if (prevPath === undefined) delete process.env.PATH;
+			else process.env.PATH = prevPath;
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	test("falls back to PATH agy when AGY_BIN is empty", async () => {
+		const prevPath = process.env.PATH;
+		const prevBin = process.env.AGY_BIN;
+		process.env.PATH = `${FAKE_BIN_DIR}:${prevPath ?? ""}`;
+		process.env.AGY_BIN = "";
+		const driver = new StreamDriver();
+		try {
+			const handle = await driver.run({
+				prompt: "hi",
+				cwd: process.cwd(),
+				model: "gemini-3.8-flash",
+				mode: "accept-edits",
+				skipPermissions: true,
+				timeoutMin: 0.5,
+				inactivityMin: 0.5,
+			});
+			const outcome = await handle.outcome;
+			assert.equal(outcome.status, "OK");
+			assert.equal(outcome.response, "HALF-ONE-HALF-TWO");
+		} finally {
+			await driver.close("shutdown");
+			if (prevBin === undefined) delete process.env.AGY_BIN;
+			else process.env.AGY_BIN = prevBin;
+			if (prevPath === undefined) delete process.env.PATH;
+			else process.env.PATH = prevPath;
+		}
+	});
+});

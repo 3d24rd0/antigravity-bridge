@@ -1,0 +1,451 @@
+{
+  "ordinary discussion, quoted notice and suffix prose remain successful": {
+    "requests": [
+      {
+        "conversationId": null,
+        "prompt": "hello"
+      },
+      {
+        "conversationId": null,
+        "prompt": "hello"
+      },
+      {
+        "conversationId": null,
+        "prompt": "hello"
+      },
+      {
+        "conversationId": null,
+        "prompt": "hello"
+      },
+      {
+        "conversationId": null,
+        "prompt": "hello"
+      },
+      {
+        "conversationId": null,
+        "prompt": "hello"
+      },
+      {
+        "conversationId": null,
+        "prompt": "hello"
+      }
+    ],
+    "terminals": [
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "Daily quota reached"
+          }
+        ],
+        "errorMessage": null
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "About quota: ⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 153h38m14s"
+          }
+        ],
+        "errorMessage": null
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "\"⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 153h38m14s\""
+          }
+        ],
+        "errorMessage": null
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "```⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 153h38m14s```"
+          }
+        ],
+        "errorMessage": null
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 153h38m14s Please wait."
+          }
+        ],
+        "errorMessage": null
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "⚠ Daily quota reached. Please upgrade your subscription to increase your limits. Resets in 153h38m14s"
+          }
+        ],
+        "errorMessage": null
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in billing"
+          }
+        ],
+        "errorMessage": null
+      }
+    ]
+  },
+  "thoughts and tools prevent classification": {
+    "requests": [
+      {
+        "conversationId": null,
+        "prompt": "hello"
+      },
+      {
+        "conversationId": null,
+        "prompt": "hello"
+      }
+    ],
+    "terminals": [
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 153h38m14s"
+          }
+        ],
+        "errorMessage": null
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 153h38m14s"
+          }
+        ],
+        "errorMessage": null
+      }
+    ]
+  },
+  "native errors and aborts retain their reasons": {
+    "requests": [
+      {
+        "conversationId": null,
+        "prompt": "hello"
+      },
+      {
+        "conversationId": null,
+        "prompt": "hello"
+      }
+    ],
+    "terminals": [
+      {
+        "type": "error",
+        "reason": "error",
+        "content": [],
+        "errorMessage": "native failure"
+      },
+      {
+        "type": "error",
+        "reason": "aborted",
+        "content": [],
+        "errorMessage": "Operation aborted"
+      }
+    ]
+  },
+  "a parked bridge call keeps toolUse and a notice-bearing continuation resumes its binding": {
+    "requests": [
+      {
+        "conversationId": null,
+        "prompt": "first"
+      },
+      {
+        "conversationId": "conv",
+        "prompt": "next"
+      }
+    ],
+    "terminals": [
+      {
+        "type": "done",
+        "reason": "toolUse",
+        "content": [
+          {
+            "type": "text",
+            "text": "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 153h38m14s"
+          },
+          {
+            "type": "toolCall",
+            "id": "call-1",
+            "name": "read",
+            "arguments": {}
+          }
+        ],
+        "errorMessage": null
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 153h38m14s"
+          }
+        ],
+        "errorMessage": null
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "errorMessage": null
+      }
+    ]
+  },
+  "live continuation redelivers a tool result and preserves native stop or error": {
+    "requests": [
+      {
+        "conversationId": "conv",
+        "prompt": "Late tool delivery: treat the following as the results of your earlier tool calls.\n\npi tool \"read\": you never received this result: you ended your turn without calling bridge_poll_result.\nResult:\nlate file contents"
+      },
+      {
+        "conversationId": "conv",
+        "prompt": "next"
+      },
+      {
+        "conversationId": "conv",
+        "prompt": "Late tool delivery: treat the following as the results of your earlier tool calls.\n\npi tool \"read\": you never received this result: you ended your turn without calling bridge_poll_result.\nResult:\nlate file contents"
+      },
+      {
+        "conversationId": null,
+        "prompt": "[The following is context from the broader pi session that this Antigravity turn was not directly spawned for: compaction summaries and turns handled by other providers or pi's own tools. Your own prior turns are already in your conversation history. Use this for continuity only.]\n\n[earlier user message]\nfirst\n\n[tool result: undefined]\nlate file contents\n\n---\n\nnext"
+      }
+    ],
+    "terminals": [
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 153h38m14s"
+          }
+        ],
+        "errorMessage": null
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "errorMessage": null
+      },
+      {
+        "type": "error",
+        "reason": "error",
+        "content": [],
+        "errorMessage": "native failure"
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "errorMessage": null
+      }
+    ]
+  },
+  "stream-json: first quota context comparison": {
+    "requests": [
+      {
+        "conversationId": null,
+        "prompt": "missed"
+      },
+      {
+        "conversationId": null,
+        "prompt": "[The following is context from the broader pi session that this Antigravity turn was not directly spawned for: compaction summaries and turns handled by other providers or pi's own tools. Your own prior turns are already in your conversation history. Use this for continuity only.]\n\n[earlier user message]\nmissed\n\n---\n\nnext"
+      }
+    ],
+    "terminals": [
+      {
+        "type": "error",
+        "reason": "error",
+        "content": [],
+        "errorMessage": "agy rate limit (ResourceExhausted): Antigravity quota exhausted; resets in 153h38m14s"
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "errorMessage": null
+      }
+    ]
+  },
+  "stream-json: bound quota context comparison": {
+    "requests": [
+      {
+        "conversationId": null,
+        "prompt": "first"
+      },
+      {
+        "conversationId": "conv",
+        "prompt": "missed"
+      },
+      {
+        "conversationId": "conv",
+        "prompt": "[The following is context from the broader pi session that this Antigravity turn was not directly spawned for: compaction summaries and turns handled by other providers or pi's own tools. Your own prior turns are already in your conversation history. Use this for continuity only.]\n\n[earlier user message]\nmissed\n\n---\n\nnext"
+      }
+    ],
+    "terminals": [
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "errorMessage": null
+      },
+      {
+        "type": "error",
+        "reason": "error",
+        "content": [],
+        "errorMessage": "agy rate limit (ResourceExhausted): Antigravity quota exhausted; resets in 153h38m14s"
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "errorMessage": null
+      }
+    ]
+  },
+  "acp: first quota context comparison": {
+    "requests": [
+      {
+        "conversationId": null,
+        "prompt": "missed"
+      },
+      {
+        "conversationId": null,
+        "prompt": "next",
+        "contextBlock": {
+          "uri": "urn:pi-bridge:context-digest/2",
+          "text": "[The following is context from the broader pi session that this Antigravity turn was not directly spawned for: compaction summaries and turns handled by other providers or pi's own tools. Your own prior turns are already in your conversation history. Use this for continuity only.]\n\n[earlier user message]\nmissed"
+        }
+      }
+    ],
+    "terminals": [
+      {
+        "type": "error",
+        "reason": "error",
+        "content": [],
+        "errorMessage": "agy rate limit (ResourceExhausted): Antigravity quota exhausted; resets in 153h38m14s"
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "errorMessage": null
+      }
+    ]
+  },
+  "acp: bound quota context comparison": {
+    "requests": [
+      {
+        "conversationId": null,
+        "prompt": "first"
+      },
+      {
+        "conversationId": "conv",
+        "prompt": "missed"
+      },
+      {
+        "conversationId": "conv",
+        "prompt": "next",
+        "contextBlock": {
+          "uri": "urn:pi-bridge:context-digest/3",
+          "text": "[The following is context from the broader pi session that this Antigravity turn was not directly spawned for: compaction summaries and turns handled by other providers or pi's own tools. Your own prior turns are already in your conversation history. Use this for continuity only.]\n\n[earlier user message]\nmissed"
+        }
+      }
+    ],
+    "terminals": [
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "errorMessage": null
+      },
+      {
+        "type": "error",
+        "reason": "error",
+        "content": [],
+        "errorMessage": "agy rate limit (ResourceExhausted): Antigravity quota exhausted; resets in 153h38m14s"
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "errorMessage": null
+      }
+    ]
+  }
+}

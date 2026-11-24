@@ -1,0 +1,6 @@
+scratch=/Users/eduardomartinez/Documents/GitHub/pi-extensions/.point5-verification.WZMXNs
+baseline_commit=f9c42fea876becd4195d5451548f771bb3354cb4
+hash_method=git hash-object (Git blob IDs, NOT raw SHA256)
+src/acp/connection.ts baseline=bcd2bba0c897ef1dbde51ede2cda8218ec28e800 candidate=35fb86b68957026161a7da602c489906ac2fb52c
+src/acp/driver.ts baseline=4815dc375cbe0827ea5b4ef5015487f784a75595 candidate=227d5ac2195a05a553156f6d86d6e5bbd53d6af9
+same_public_test_fixture=tests/helpers/fake-acp-server.mjs (current fixture in both copies; production baseline unchanged)
