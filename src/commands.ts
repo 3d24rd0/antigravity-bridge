@@ -26,7 +26,7 @@ import type { TurnDriver } from "./driver-types.js";
 import type { AcpDriver } from "./acp/driver.js";
 import { spawn } from "node:child_process";
 import {
-	CONFIG_PATH,
+	configPath,
 	loadConfig,
 	logsDir,
 	MAX_TURN_CAP_MIN,
@@ -190,7 +190,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		`  models:        ${ctx.entries.length} ${source}`,
 		...settingsRows(ctx),
 		`  sessions:      ${ctx.store.size} bound`,
-		`  config:        ${CONFIG_PATH}`,
+		`  config:        ${configPath()}`,
 		"",
 		"Subcommands: /agy auth, /agy auth-manual, /agy mode plan|accept-edits, /agy readonly on|off, /agy permissions on|off, /agy ask on|off, /agy stop [runId-prefix], /agy model <alias>, /agy thinking low|medium|high|xhigh, /agy agent <name|off>, /agy subagents, /agy quota, /agy artifacts [open <n|name>], /agy tasks [tail <id>], /agy bridge all|mcp|none, /agy tools [hide|show <name>|reset], /agy web on|off, /agy digest on|off, /agy system-prompt on|off, /agy timeout <1-1440|off>, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear, /agy doctor",
 	].join("\n");
@@ -541,7 +541,7 @@ export function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					`  models:        ${ctx.entries.length} ${ctx.usingFallback ? "FALLBACK (agy models failed)" : "discovered"}`,
 					`  agy cli:       ${describeAgyVersionCheck(cliCheck)} (min ${MIN_AGY_VERSION})${cliSuffix}`,
 					`  plan:          ${planSummary(snap.acp?.planTier, engine)}`,
-					`  config:        ${CONFIG_PATH}`,
+					`  config:        ${configPath()}`,
 					`  logs:          ${logsDir()} (attach recent days' files when reporting issues; set AGY_DEBUG=1 to capture details)`,
 				];
 				if (snap.engine === "acp" && snap.acp) {
@@ -1086,7 +1086,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 
 	await showSettingsMenu(ui, {
 		title: "Antigravity provider",
-		subtitle: `Config file: ${CONFIG_PATH} — changes save when the dialog closes`,
+		subtitle: `Config file: ${configPath()} — changes save when the dialog closes`,
 		rows,
 		onChange: (id, newValue) => applySettingChange(pending, id, newValue),
 	});

@@ -20,7 +20,6 @@
 
 import http from "node:http";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -32,6 +31,7 @@ import {
 	SUPPORTED_PROTOCOL_VERSIONS,
 } from "@modelcontextprotocol/sdk/types.js";
 import { GATED_AGY_TOOL_SET } from "./approval-hook.js";
+import { bridgeDir } from "./config.js";
 import { bridgeVersion } from "./version.js";
 
 /** Tools we do NOT expose to agy: it would just error (the provider is already
@@ -168,12 +168,11 @@ function clampProtocolVersionHeader(req: http.IncomingMessage): void {
 	}
 }
 
-const BRIDGE_BASE = path.join(os.homedir(), ".pi", "agent", "antigravity-bridge");
-
 /** Per-process config dir. Each pi session owns its own file, so concurrent
- *  sessions never race on or cross-route through one shared config. */
+ *  sessions never race on or cross-route through one shared config. Resolved
+ *  from pi's agent dir at call time (upstream 8dee43b / #17). */
 export function bridgeMcpConfigDir(): string {
-	return path.join(BRIDGE_BASE, `agy-mcp-${process.pid}`);
+	return path.join(bridgeDir(), `agy-mcp-${process.pid}`);
 }
 
 function bridgeMcpConfigPath(): string {
@@ -200,7 +199,7 @@ function isPidAlive(pid: number): boolean {
 function sweepStaleBridgeDirs(): void {
 	let entries: string[];
 	try {
-		entries = fs.readdirSync(BRIDGE_BASE);
+		entries = fs.readdirSync(bridgeDir());
 	} catch {
 		return;
 	}
@@ -210,7 +209,7 @@ function sweepStaleBridgeDirs(): void {
 		if (!Number.isInteger(pid) || pid === process.pid) continue;
 		if (isPidAlive(pid)) continue;
 		try {
-			fs.rmSync(path.join(BRIDGE_BASE, name), { recursive: true, force: true });
+			fs.rmSync(path.join(bridgeDir(), name), { recursive: true, force: true });
 		} catch {
 			/* best effort */
 		}

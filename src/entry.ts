@@ -73,9 +73,9 @@ import { setupAuthUrlCapture } from "./acp/browser-capture.js";
 import { clearAcpAuthVerified, ensureAcpReady, inspectAcpSetup, resolveInstalledBinary } from "./acp/setup.js";
 import { checkAcpUpdate } from "./acp/update.js";
 import type { TurnDriver, TurnOutcome } from "./driver-types.js";
-import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "./config.js";
+import { loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "./config.js";
 import { agyMissingMessage, isAgyInstalled } from "./engine-picker.js";
-import { checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_VERSION } from "./agy-version.js";
+import { checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_VERSION, agyVersionVerdict } from "./agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "./agents.js";
 import { formatSubagentRoster, SubagentRoster } from "./subagent-roster.js";
 import { spawn } from "node:child_process";
@@ -863,7 +863,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		if (mcpHandle) return; // already running (reload re-fires session_start)
 		// pi loads project skill locations only after the project is trusted;
 		// mirror that gate. Global skill dirs are always scanned.
-		const skills: SkillLite[] = scanSkills(ctx.isProjectTrusted() ? process.cwd() : undefined);
+		const skills: SkillLite[] = scanSkills(ctx.isProjectTrusted() ? { projectDir: process.cwd() } : {});
 		const listTools = () => {
 			// /mcp and pi.setActiveTools() update the same live catalog. ACP gets
 			// this endpoint through session/new or session/load; no global config write.
@@ -984,6 +984,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			{
 				const cfg = loadConfig();
 				const mode = resolveGateMode(cfg.approvals.gateMode, detectPermissionGateExtensions());
+				if (mode !== "off" && engine === "acp") {
+					// Staged-channel hook delivery is probed live on agy 1.5.12
+					// only (issue #18); older builds may not honor it. Warn so a
+					// silently inert gate is at least visible in the log.
+					const cli = await checkAgyCliVersion(resolveAgyBinary());
+					if (cli.status === "ok" && agyVersionVerdict(cli.raw, "1.5.12").status === "unsupported") {
+						fileLog.log("approval-gate-agy-version-unverified", { version: cli.raw }, "warn");
+					}
+				}
 				if (mode === "dedicated") {
 					// The explicit antigravity_approve variant is planned; until it
 					// ships, dedicated stages the same shadow tools. Say so, so the
