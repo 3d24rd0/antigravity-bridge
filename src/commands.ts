@@ -176,7 +176,7 @@ function settingsRows(ctx: AgyCommandCtx): string[] {
 		row("AskAntigravity model:", config.defaultModel),
 		row("AskAntigravity thinking:", config.defaultThinking),
 		row("bridge tools:", config.bridgeTools),
-		row("digest:", config.digest ? "on" : "off"),
+		row("digest:", config.digest ? "on (default)" : "off"),
 		row("system prompt:", config.systemPrompt ? "on" : "off"),
 	];
 }

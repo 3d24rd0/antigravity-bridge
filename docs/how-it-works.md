@@ -209,7 +209,7 @@ and is never written back to it.
 | `AGY_BRIDGE_TOOLS` | `all` \| `mcp` \| `none` | Bridge catalog |
 | `AGY_ASK_TOOL` | truthy | Register `AskAntigravity` |
 | `AGY_WEB_TOOLS` | truthy | Register the web tools |
-| `AGY_DIGEST` | truthy | Send the context digest |
+| `AGY_DIGEST` | `0` \| `false` \| `off` | Send the context digest. Default ON (`1`/`true`/`on` or unset); `digest: false` in `config.json` also disables |
 | `AGY_SYSTEM_PROMPT` | truthy | Carry Pi's system prompt |
 | `AGY_DEFAULT_MODEL` / `AGY_DEFAULT_THINKING` | slug / level | `AskAntigravity` defaults |
 | `AGY_TURN_TIMEOUT_MIN` / `AGY_INACTIVITY_TIMEOUT_MIN` | minutes or `0` | Turn cap / stall guard |

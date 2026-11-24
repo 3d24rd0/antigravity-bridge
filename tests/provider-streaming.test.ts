@@ -24,13 +24,13 @@ import {
 	type SimpleStreamOptions,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
-import { ToolRoundTrips, WrapperReplay, consumeActivity, createStreamSimple, SYSTEM_PROMPT_PREAMBLE, TOOL_PRIORITY_NOTE, type BlockState } from "../src/provider.js";
+import { ToolRoundTrips, WrapperReplay, consumeActivity, createStreamSimple, STREAM_JSON_PROMPT_CAP, STREAM_JSON_PROMPT_MARGIN, SYSTEM_PROMPT_PREAMBLE, TOOL_PRIORITY_NOTE, type BlockState } from "../src/provider.js";
 import { toAgyEffort } from "../src/models.js";
 import { TurnDiffContext } from "../src/diff-render.js";
 import { SessionStore } from "../src/sessions.js";
 import { setCachedQuotaReport } from "../src/usage.js";
 import { resetSyspromptAgentForTests } from "../src/sysprompt-agent.js";
-import type { DriverActivity, StreamDriver, DriverTurnRequest } from "../src/driver.js";
+import type { DriverActivity, StreamDriver, DriverTurnRequest, TurnHandle } from "../src/driver.js";
 
 const model: Model<Api> = {
 	id: "gemini-flash",
@@ -701,10 +701,24 @@ function compactionMessage(summary: string, timestamp: number = stamp(`summary:$
 	};
 }
 
+/** A parked round-trip's pi toolResult message (stable timestamp: the digest
+ *  boundary fingerprint is role:timestamp). */
+function toolResultMessage(callId: string, text: string, timestamp: number = stamp(`toolResult:${callId}`)) {
+	return {
+		role: "toolResult" as const,
+		toolCallId: callId,
+		toolName: "read",
+		content: [{ type: "text" as const, text }],
+		isError: false as const,
+		timestamp,
+	};
+}
+
 type TurnMessage =
 	| ReturnType<typeof userMessage>
 	| ReturnType<typeof assistantMessage>
-	| ReturnType<typeof compactionMessage>;
+	| ReturnType<typeof compactionMessage>
+	| ReturnType<typeof toolResultMessage>;
 
 /** pi context after a compaction: the summary, then turns kept after the cut,
  *  then the current prompt. Timestamps are index-stable: turn 2 rebuilds the
@@ -1120,4 +1134,718 @@ test("preserve: a non-ephemeral fresh turn still ships the pi system prompt fram
 			assert.ok(prompt.includes(TOOL_PRIORITY_NOTE));
 		},
 	);
+});
+
+// --- S4: a byte-budget skip must not consume the pending delta -------------
+//
+// Judgment Day round 1 (I1 = A1/B1/B2): a turn whose digest is skipped for
+// byte budget still settled lastMessageCount/digestBoundary, so the skipped
+// delta started after the advanced watermark and was never delivered in that
+// bound conversation. The skip must keep the PREVIOUS watermark and boundary
+// (watermark 0 when no trusted prior watermark existed) so a later, smaller
+// turn re-delivers the handoff, while the binding and digestSummaryId persist.
+
+test("a byte-budget-skipped digest keeps the previous watermark, so a smaller turn re-delivers the delta", async () => {
+	await withIsolatedHome(() => withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined, AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-skip-keep-"));
+		try {
+			const h = digestHarness(dir, [{ full: "gemini-3.6-flash", id: "gemini-flash" }]);
+			const key = `cwd:${dir}`;
+			h.store.set(key, {
+				conversationId: "conv-agy",
+				lastStepIdx: -1,
+				lastMessageCount: 2,
+				modelId: "gemini-3.6-flash",
+				digestBoundary: `user:${stamp("m2")}`,
+			});
+			// Pending delta (the claude turn) whose UTF-8 bytes cannot fit the
+		// remaining budget: an over-cap prompt is silently dropped by agy, so
+		// the digest must be skipped WITHOUT consuming the pending delta.
+			const skipped = await h.turn([
+				userMessage("m1"),
+				userMessage("m2"),
+				assistantMessage("claude", "漢".repeat(8_000)),
+				userMessage("current"),
+			]);
+			assert.equal(skipped?.conversationId, "conv-agy", "the conversation binding persists");
+			assert.equal(skipped?.prompt, "current", "nothing ships: the digest is skipped");
+			const rec = h.store.get(key);
+			assert.equal(rec?.lastMessageCount, 2, "the previous watermark is kept");
+			assert.equal(rec?.digestBoundary, `user:${stamp("m2")}`, "the previous boundary is kept");
+
+			// A later smaller turn (same last message, so the kept watermark
+			// validates) delivers the held handoff and settles normally.
+			const smaller = await h.turn([
+				userMessage("m1"),
+				userMessage("m2"),
+				assistantMessage("claude", "smaller note"),
+				userMessage("current", stamp("current")),
+			]);
+			assert.equal(smaller?.conversationId, "conv-agy", "still bound to the same conversation");
+			assert.equal(countOccurrences(smaller?.prompt ?? "", "smaller note"), 1, "the pending delta is delivered on the smaller turn");
+			assert.ok((smaller?.prompt ?? "").includes("context from the broader pi session"));
+			const rec2 = h.store.get(key);
+			assert.equal(rec2?.lastMessageCount, 4, "a delivered digest advances the watermark");
+			assert.equal(rec2?.digestBoundary, `user:${stamp("current")}`);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}));
+});
+
+test("a prompt that alone exhausts the byte budget skips the digest without consuming the delta", async () => {
+	await withIsolatedHome(() => withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined, AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-skip-prompt-"));
+		try {
+			const h = digestHarness(dir, [{ full: "gemini-3.6-flash", id: "gemini-flash" }]);
+			const key = `cwd:${dir}`;
+			h.store.set(key, {
+				conversationId: "conv-agy",
+				lastStepIdx: -1,
+				lastMessageCount: 2,
+				modelId: "gemini-3.6-flash",
+				digestBoundary: `user:${stamp("m2")}`,
+			});
+			// 8k CJK chars are ~24KB: the prompt alone exhausts the budget
+			// (digestMaxCharsForEngine returns null at the build site).
+			const bigPrompt = "漢".repeat(8_000);
+			const skipped = await h.turn([
+				userMessage("m1"),
+				userMessage("m2"),
+				assistantMessage("claude", "context note"),
+				userMessage(bigPrompt),
+			]);
+			assert.equal(skipped?.prompt, bigPrompt, "the prompt ships, the digest does not");
+			const rec = h.store.get(key);
+			assert.equal(rec?.lastMessageCount, 2, "the previous watermark is kept");
+			assert.equal(rec?.digestBoundary, `user:${stamp("m2")}`, "the previous boundary is kept");
+
+			const smaller = await h.turn([
+				userMessage("m1"),
+				userMessage("m2"),
+				assistantMessage("claude", "smaller note"),
+				userMessage("current"),
+			]);
+			assert.equal(countOccurrences(smaller?.prompt ?? "", "smaller note"), 1, "the pending delta is delivered on the smaller turn");
+			const rec2 = h.store.get(key);
+			assert.equal(rec2?.lastMessageCount, 4);
+			assert.equal(rec2?.digestBoundary, `user:${stamp("current")}`);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}));
+});
+
+test("an over-tight cap that squeezes the builder to nothing still keeps the delta pending", async () => {
+	await withIsolatedHome(() => withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined, AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-skip-squeeze-"));
+		try {
+			const h = digestHarness(dir, [{ full: "gemini-3.6-flash", id: "gemini-flash" }]);
+			const key = `cwd:${dir}`;
+			h.store.set(key, {
+				conversationId: "conv-agy",
+				lastStepIdx: -1,
+				lastMessageCount: 2,
+				modelId: "gemini-3.6-flash",
+				digestBoundary: `user:${stamp("m2")}`,
+			});
+			// CAP - MARGIN - 12: maxChars lands at 12, below the floor the
+			// truncation marker needs, so the builder returns "" while the
+			// delta part is pending. That shape is still a byte-budget skip.
+			const tightPrompt = "x".repeat(STREAM_JSON_PROMPT_CAP - STREAM_JSON_PROMPT_MARGIN - 12);
+			const skipped = await h.turn([
+				userMessage("m1"),
+				userMessage("m2"),
+				assistantMessage("claude", "claude says hi"),
+				userMessage(tightPrompt),
+			]);
+			assert.equal(skipped?.prompt, tightPrompt);
+			const rec = h.store.get(key);
+			assert.equal(rec?.lastMessageCount, 2, "the previous watermark is kept");
+			assert.equal(rec?.digestBoundary, `user:${stamp("m2")}`, "the previous boundary is kept");
+
+			const smaller = await h.turn([
+				userMessage("m1"),
+				userMessage("m2"),
+				assistantMessage("claude", "smaller note"),
+				userMessage("current"),
+			]);
+			assert.equal(countOccurrences(smaller?.prompt ?? "", "smaller note"), 1, "the pending delta is delivered on the smaller turn");
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}));
+});
+
+test("a byte-budget-skipped compaction rotation keeps the handoff pending, so the retry delivers the kept post-cut turns", async () => {
+	// AGY_DIGEST=0: the forced compaction delivery (and its pending S4 retry)
+	// must fire even with the digest knob off.
+	await withIsolatedHome(() => withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: "0", AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-skip-rot-"));
+		try {
+			const h = digestHarness(dir, [{ full: "gemini-3.6-flash", id: "gemini-flash" }], "conv-fresh");
+			const key = `cwd:${dir}`;
+			// A long conversation bound to agy, then pi compacts it down to 8.
+			h.store.set(key, {
+				conversationId: "conv-long",
+				lastStepIdx: -1,
+				lastMessageCount: 12,
+				modelId: "gemini-3.6-flash",
+			});
+			const at = (i: number) => 1_690_000_000_000 + i;
+			// The KEPT own turn closest to the cut is oversized: the digest
+			// truncator keeps the newest delta part (clamped), so the only way the
+			// byte guard trips is when THAT part itself cannot fit the budget.
+			const base: TurnMessage[] = [
+				userMessage("m1", at(0)),
+				assistantMessage("claude", "claude says hi", at(1)),
+				userMessage("m2", at(2)),
+				assistantMessage("antigravity", "pre-cut agy answer", at(3)),
+				compactionMessage("sqlite was chosen", at(4)),
+				userMessage("kept post-cut question", at(5)),
+				assistantMessage("antigravity", "測".repeat(12_000) + "sentinel post-cut answer", at(6)),
+			];
+			const withPrompt = (current: string): TurnMessage[] => [...base, userMessage(current, at(7))];
+			// The retry: a LATER SMALLER turn (the oversized kept turn aged out of
+			// pi's transcript; the summary is still undelivered). Identical pending
+			// bytes would re-trip the same byte budget, by design.
+			const retryBase: TurnMessage[] = [
+				...base.slice(0, 6),
+				assistantMessage("antigravity", "sentinel post-cut answer", at(6)),
+			];
+			const withRetryPrompt = (current: string): TurnMessage[] => [...retryBase, userMessage(current, at(7))];
+
+			// The rotation handoff cannot fit the byte budget alongside the
+			// prompt: skipped, and the fresh conversation must not be marked as
+			// having seen anything.
+			const skipped = await h.turn(withPrompt("current question"));
+			assert.equal(skipped?.conversationId, null, "compaction rotates the conversation");
+			assert.ok(!(skipped?.prompt ?? "").includes("sqlite was chosen"), "the handoff is skipped, not shipped");
+			const rec = h.store.get(key);
+			assert.equal(rec?.lastMessageCount, 0, "no trusted prior watermark after the rotation: keep 0");
+			assert.equal(rec?.digestBoundary, undefined);
+			assert.equal(rec?.digestSummaryId, undefined, "the fresh conversation has seen no summary");
+
+			// The retry turn runs the digest in rotation shape again: the summary
+			// plus the kept post-cut turns (own turns included) still arrive.
+			const retry = await h.turn(withRetryPrompt("retry question"));
+			assert.equal(retry?.conversationId, "conv-fresh", "the retry resumes the rotated conversation");
+			const retryPrompt = retry?.prompt ?? "";
+			assert.equal(countOccurrences(retryPrompt, "[pi compaction summary]"), 1, "the summary ships exactly once");
+			assert.ok(retryPrompt.includes("sqlite was chosen"));
+			assert.ok(retryPrompt.includes("sentinel post-cut answer"), "kept post-cut own turn ships via the retry");
+			assert.ok(retryPrompt.includes("kept post-cut question"), "the kept post-cut user turn ships via the retry");
+			assert.ok(!retryPrompt.includes("pre-cut agy answer"), "pre-cut detail stays out");
+			assert.ok(retryPrompt.endsWith("retry question"));
+			const rec2 = h.store.get(key);
+			assert.equal(rec2?.lastMessageCount, 8, "the delivered handoff advances the watermark");
+			assert.equal(rec2?.digestBoundary, `user:${at(7)}`);
+			assert.ok(rec2?.digestSummaryId, "the delivered summary identity settles");
+
+			// The handoff is consumed: pure-agy steady state stays bare.
+			const third = await h.turn([
+				...withRetryPrompt("retry question"),
+				assistantMessage("antigravity", "later answer", at(8)),
+				userMessage("current3", at(9)),
+			]);
+			assert.equal(third?.prompt, "current3", "no re-injection after the retry delivered the handoff");
+			assert.equal(countOccurrences(third?.prompt ?? "", "[pi compaction summary]"), 0);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}));
+});
+
+// --- S4 defect (round 2): a byte-budget skip of a NON-rotation fresh handoff
+// (model switch, engine switch, recreation recovery — not a compactedRotation)
+// must retry in FRESH shape: the retried conversation has seen none of agy's
+// own prior turns, so own-provider assistant turns must ship on the retry, for
+// as many retries as the handoff needs.
+
+test("a byte-budget-skipped non-rotation fresh handoff retries in fresh shape (own-provider turns ship on the retry)", async () => {
+	await withIsolatedHome(() => withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined, AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-skip-fresh-"));
+		try {
+			const h = digestHarness(
+				dir,
+				[
+					{ full: "gemini-3.6-flash", id: "gemini-flash" },
+					{ full: "claude-sonnet-4-6", id: "claude-sonnet" },
+				],
+				"conv-fresh",
+			);
+			const key = `cwd:${dir}`;
+			const bigPrompt = "漢".repeat(8_000); // ~24KB: prompt alone exhausts the cap
+			// Bound to the previous model; a model switch rotates to a fresh
+			// conversation that is NOT a compaction rotation.
+			h.store.set(key, {
+				conversationId: "conv-gemini",
+				lastStepIdx: -1,
+				lastMessageCount: 1,
+				modelId: "gemini-3.6-flash",
+			});
+			const skipped = await h.turn(
+				[
+					userMessage("m1"),
+					assistantMessage("antigravity", "pre-switch agy answer"),
+					userMessage(bigPrompt),
+				],
+				"claude-sonnet",
+			);
+			assert.equal(skipped?.conversationId, null, "the model switch starts a fresh conversation");
+			assert.equal(skipped?.prompt, bigPrompt, "the handoff digest is skipped for byte budget");
+			const rec = h.store.get(key);
+			assert.equal(rec?.lastMessageCount, 0, "no trusted prior watermark: keep 0");
+			assert.equal(rec?.digestBoundary, undefined);
+
+			// A second skip (the retry prompt is ALSO oversized) on the SAME model
+			// and conversation (R2-I1: without the modelId the model flip rotated
+			// and re-seeded the marker through the unbound arm, so retryFresh
+			// persistence across repeated skips was never exercised): the pending
+			// fresh handoff must survive repeated skips.
+			const skipped2 = await h.turn(
+				[
+					userMessage("m1"),
+					assistantMessage("antigravity", "pre-switch agy answer"),
+					userMessage(`second${bigPrompt}`),
+				],
+				"claude-sonnet",
+			);
+			assert.equal(skipped2?.prompt, `second${bigPrompt}`, "the digest is still skipped");
+
+			// A smaller retry turn ships the held handoff in fresh shape: the
+			// own-provider assistant turn from BEFORE the switch ships, because
+			// the fresh conversation holds none of it.
+			const retry = await h.turn([
+				userMessage("m1"),
+				assistantMessage("antigravity", "pre-switch agy answer"),
+				userMessage("retry question"),
+			], "claude-sonnet");
+			assert.equal(retry?.conversationId, "conv-fresh", "the retry resumes the fresh conversation");
+			const retryPrompt = retry?.prompt ?? "";
+			assert.ok(retryPrompt.includes("pre-switch agy answer"), "own-provider turn ships on the retry");
+			assert.ok(retryPrompt.includes("m1"), "the pending delta ships on the retry");
+			assert.ok(retryPrompt.endsWith("retry question"));
+			const rec2 = h.store.get(key);
+			assert.equal(rec2?.lastMessageCount, 3, "the delivered handoff advances the watermark");
+			assert.equal(rec2?.digestBoundary, `user:${stamp("retry question")}`);
+
+			// The handoff shipped: pure-agy bound steady state no longer re-injects.
+			const third = await h.turn([
+				userMessage("m1"),
+				assistantMessage("antigravity", "pre-switch agy answer"),
+				userMessage("retry question"),
+				assistantMessage("antigravity", "later answer"),
+				userMessage("current3"),
+			], "claude-sonnet");
+			assert.equal(third?.prompt, "current3", "no re-injection after the retry delivered the handoff");
+			assert.ok(!(third?.prompt ?? "").includes("pre-switch agy answer"), "bound steady state skips own turns again");
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}));
+});
+
+// --- S4 round-3 corrections: the digestSkipPending lifecycle -------------
+//
+// Judgment Day round 2 (R2-S1/R2-S2/R2-S3, human-authorized extra round):
+// "each piece ships once" must hold across the park path and gate-closed
+// settles, not only the clean-OK shipping settle.
+
+const CLAUDE_SWITCH_ENTRIES = [
+	{ full: "gemini-3.6-flash", id: "gemini-flash" },
+	{ full: "claude-sonnet-4-6", id: "claude-sonnet" },
+];
+
+/** R2-S1: a fresh-shape retry handoff that actually SHIPS on a turn which
+ *  ends in a PARK must clear its pending marker there — the clean-OK settle
+ *  never runs for a parked turn, and a surviving "fresh" marker re-ships the
+ *  identical handoff into a conversation that already received it. */
+test("a fresh-shape handoff that ships on a parked turn clears the pending marker (no duplicate handoff)", async () => {
+	await withIsolatedHome(() => withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined, AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-skip-parkship-"));
+		try {
+			const requests: DriverTurnRequest[] = [];
+			// The shipping turn parks: a bridge call is pushed onto its handle
+			// before the pass starts; the continuation reenters the SAME live
+			// handle; later passes settle OK on the same conversation.
+			const parkedActivities: DriverActivity[] = [];
+			const parkedHandle: TurnHandle = {
+				id: "parked-turn",
+				next: async () => parkedActivities.shift() ?? null,
+				pushExternal: (activity: DriverActivity) => parkedActivities.push(activity),
+				outcome: Promise.resolve({
+					status: "OK" as const,
+					response: "ok",
+					finished: true,
+					aborted: false,
+					conversationId: "conv-park-fresh",
+				}),
+			};
+			const settledHandle = (): TurnHandle => ({
+				id: "settled-turn",
+				next: async () => null,
+				pushExternal: () => {},
+				outcome: Promise.resolve({
+					status: "OK" as const,
+					response: "ok",
+					finished: true,
+					aborted: false,
+					conversationId: "conv-park-fresh",
+				}),
+			});
+			const driver = {
+				get activeHandle() {
+					return parkedHandle;
+				},
+				kickIdle: () => {},
+				reentry: () => parkedHandle,
+				snapshot: () => ({ conversationId: "conv-park-fresh" }),
+				run: async (request: DriverTurnRequest) => {
+					requests.push(request);
+					return requests.length === 2 ? parkedHandle : settledHandle();
+				},
+			} as unknown as StreamDriver;
+			const roundTrips = new ToolRoundTrips(driver, undefined, { escalateAfterMs: 0 });
+			const store = new SessionStore(path.join(dir, "sessions.json"));
+			const streamSimple = createStreamSimple({ entries: CLAUDE_SWITCH_ENTRIES, store, driver, roundTrips });
+			const run = async (messages: TurnMessage[]) => {
+				const stream = streamSimple(
+					{ ...model, id: "claude-sonnet" },
+					normalizeContext({ systemPrompt: undefined, messages }),
+					{ cwd: dir } as unknown as SimpleStreamOptions,
+				);
+				for await (const ev of stream) void ev;
+			};
+			const key = `cwd:${dir}`;
+			const bigPrompt = "漢".repeat(8_000); // ~24KB: prompt alone exhausts the cap
+			// Bound to the previous model; a model switch rotates to a fresh
+			// conversation whose fresh handoff is byte-skipped.
+			store.set(key, {
+				conversationId: "conv-gemini",
+				lastStepIdx: -1,
+				lastMessageCount: 1,
+				modelId: "gemini-3.6-flash",
+			});
+			await run([userMessage("m1"), assistantMessage("antigravity", "pre-switch agy answer"), userMessage(bigPrompt)]);
+			assert.equal(requests[0]?.conversationId, null, "the model switch starts a fresh conversation");
+			assert.equal(requests[0]?.prompt, bigPrompt, "the handoff digest is skipped for byte budget");
+
+			// The shipping turn: the pending fresh handoff SHIPS (own-provider
+			// turns included) — and the turn parks on a bridge call.
+			const parked = roundTrips.onToolCall("call-1", "read", {}, new AbortController().signal);
+			await run([userMessage("m1"), assistantMessage("antigravity", "pre-switch agy answer"), userMessage("retry question")]);
+			assert.ok(
+				(requests[1]?.prompt ?? "").includes("pre-switch agy answer"),
+				"the handoff actually ships on the parked turn",
+			);
+			assert.ok((requests[1]?.prompt ?? "").includes("retry question"));
+
+			// The continuation settles the parked turn; no new agy turn starts.
+			await run([
+				userMessage("m1"),
+				assistantMessage("antigravity", "pre-switch agy answer"),
+				userMessage("retry question"),
+				toolResultMessage("call-1", "tool output"),
+			]);
+			assert.equal(requests.length, 2, "the continuation reattaches without starting a new turn");
+			await parked;
+			const rec = store.get(key);
+			assert.equal(rec?.lastMessageCount, 4, "the shipped handoff's window settles via the continuation");
+			assert.equal(rec?.digestBoundary, `toolResult:${stamp("toolResult:call-1")}`);
+
+			// The next turn must be bare: no duplicate handoff, no re-shipped
+			// pre-switch own turn into a conversation that already received it.
+			await run([
+				userMessage("m1"),
+				assistantMessage("antigravity", "pre-switch agy answer"),
+				userMessage("retry question"),
+				toolResultMessage("call-1", "tool output"),
+				userMessage("next"),
+			]);
+			assert.equal(requests[2]?.prompt, "next", "no duplicate handoff after the parked turn shipped it");
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}));
+});
+
+/** R2-S2 (config arm): a digest-off turn that closes the gate settles
+ *  normally AND deliberately drops the pending handoff — no stale marker, no
+ *  later stale or duplicated re-ship of the pre-switch own turns. */
+test("a digest-off turn settles normally and drops a pending fresh handoff (no later stale re-ship)", async () => {
+	await withIsolatedHome(() => withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined, AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-skip-offdrop-"));
+		try {
+			const h = digestHarness(dir, CLAUDE_SWITCH_ENTRIES, "conv-off-fresh");
+			const key = `cwd:${dir}`;
+			const bigPrompt = "漢".repeat(8_000);
+			h.store.set(key, {
+				conversationId: "conv-gemini",
+				lastStepIdx: -1,
+				lastMessageCount: 1,
+				modelId: "gemini-3.6-flash",
+			});
+			const skipped = await h.turn(
+				[userMessage("m1"), assistantMessage("antigravity", "pre-switch agy answer"), userMessage(bigPrompt)],
+				"claude-sonnet",
+			);
+			assert.equal(skipped?.conversationId, null, "the model switch starts a fresh conversation");
+			assert.equal(skipped?.prompt, bigPrompt, "the handoff digest is skipped for byte budget");
+
+			// The user turns the digest OFF for the next turn.
+			const prevDigest = process.env.AGY_DIGEST;
+			let offTurn: DriverTurnRequest | undefined;
+			try {
+				process.env.AGY_DIGEST = "0";
+				offTurn = await h.turn(
+					[userMessage("m1"), assistantMessage("antigravity", "pre-switch agy answer"), userMessage("switched off")],
+					"claude-sonnet",
+				);
+			} finally {
+				if (prevDigest === undefined) delete process.env.AGY_DIGEST;
+				else process.env.AGY_DIGEST = prevDigest;
+			}
+			assert.equal(offTurn?.prompt, "switched off", "a digest-off turn settles normally (bare prompt)");
+			const rec = h.store.get(key);
+			assert.equal(rec?.lastMessageCount, 3, "the digest-off turn settles the window");
+			assert.equal(rec?.digestBoundary, `user:${stamp("switched off")}`);
+
+			// A later digest-on turn must NOT re-ship the dropped handoff: the
+			// config-off settle deliberately dropped it with the marker.
+			const later = await h.turn(
+				[
+					userMessage("m1"),
+					assistantMessage("antigravity", "pre-switch agy answer"),
+					userMessage("switched off"),
+					assistantMessage("antigravity", "agy answered while off"),
+					userMessage("follow-up"),
+				],
+				"claude-sonnet",
+			);
+			assert.equal(later?.prompt, "follow-up", "no stale or duplicated handoff after the config-off drop");
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}));
+});
+
+/** R2-S2 (transient arm): a late-result reattachment turn that closes the
+ *  gate is a TRANSIENT suppression — the pending window is NOT consumed and
+ *  the marker survives, so the handoff is retried later. */
+test("a late-result turn that closes the digest gate keeps the pending window (handoff retried later)", async () => {
+	await withIsolatedHome(() => withEnv({ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined, AGY_SYSTEM_PROMPT: "off" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-skip-latehold-"));
+		try {
+			const requests: DriverTurnRequest[] = [];
+			const handle = (): TurnHandle => ({
+				id: "late-turn",
+				next: async () => null,
+				pushExternal: () => {},
+				outcome: Promise.resolve({
+					status: "OK" as const,
+					response: "ok",
+					finished: true,
+					aborted: false,
+					conversationId: "conv-late-fresh",
+				}),
+			});
+			const driver = {
+				get activeHandle() {
+					return handle();
+				},
+				kickIdle: () => {},
+				reentry: () => null,
+				snapshot: () => ({ conversationId: "conv-late-fresh" }),
+				run: async (request: DriverTurnRequest) => {
+					requests.push(request);
+					return handle();
+				},
+			} as unknown as StreamDriver;
+			const roundTrips = new ToolRoundTrips(driver, undefined, { escalateAfterMs: 0 });
+			const store = new SessionStore(path.join(dir, "sessions.json"));
+			const streamSimple = createStreamSimple({ entries: CLAUDE_SWITCH_ENTRIES, store, driver, roundTrips });
+			const run = async (messages: TurnMessage[]) => {
+				const stream = streamSimple(
+					{ ...model, id: "claude-sonnet" },
+					normalizeContext({ systemPrompt: undefined, messages }),
+					{ cwd: dir } as unknown as SimpleStreamOptions,
+				);
+				for await (const ev of stream) void ev;
+			};
+			const key = `cwd:${dir}`;
+			const bigPrompt = "漢".repeat(8_000);
+			store.set(key, {
+				conversationId: "conv-gemini",
+				lastStepIdx: -1,
+				lastMessageCount: 1,
+				modelId: "gemini-3.6-flash",
+			});
+			// Turn 1: the model switch rotates and the fresh handoff is skipped.
+			await run([userMessage("m1"), assistantMessage("antigravity", "pre-switch agy answer"), userMessage(bigPrompt)]);
+			assert.equal(requests[0]?.conversationId, null, "the model switch starts a fresh conversation");
+			assert.equal(requests[0]?.prompt, bigPrompt, "the handoff digest is skipped for byte budget");
+
+			// A dead park closes the digest gate for the late-result turn.
+			const dead = roundTrips.onToolCall("call-9", "AskClaude", {}, new AbortController().signal);
+			roundTrips.failAll("test expiry");
+			await dead.catch(() => {});
+
+			// Turn 2: the late-result reattachment turn (gate closed by the
+			// transient late delivery) must NOT consume the pending window.
+			await run([
+				userMessage("m1"),
+				assistantMessage("antigravity", "pre-switch agy answer"),
+				toolResultMessage("call-9", "late output"),
+			]);
+			assert.match(requests[1]?.prompt ?? "", /Late tool delivery/);
+			const rec = store.get(key);
+			assert.equal(rec?.lastMessageCount, 0, "the pending window is NOT consumed by the late turn");
+			assert.equal(rec?.digestBoundary, undefined, "the previous boundary is kept");
+
+			// Turn 3: the handoff is retried later, in full fresh shape.
+			await run([
+				userMessage("m1"),
+				assistantMessage("antigravity", "pre-switch agy answer"),
+				toolResultMessage("call-9", "late output"),
+				userMessage("next"),
+			]);
+			const retryPrompt = requests[2]?.prompt ?? "";
+			assert.ok(retryPrompt.includes("pre-switch agy answer"), "the handoff is retried later");
+			assert.ok(retryPrompt.includes("m1"), "the pending delta ships on the retry");
+			assert.ok(retryPrompt.endsWith("next"));
+			const rec2 = store.get(key);
+			assert.equal(rec2?.lastMessageCount, 4, "the delivered handoff advances the watermark");
+
+			// The handoff shipped: the next steady-state turn is bare.
+			await run([
+				userMessage("m1"),
+				assistantMessage("antigravity", "pre-switch agy answer"),
+				toolResultMessage("call-9", "late output"),
+				userMessage("next"),
+				userMessage("next2"),
+			]);
+			assert.equal(requests[3]?.prompt, "next2", "no re-injection after the retry delivered the handoff");
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}));
+});
+
+// --- S4 (I2 = A2/B4): the byte budget must match the composed prompt -------
+//
+// The budget used to count only Buffer.byteLength(prompt); when the pi
+// system-prompt block rides INLINE (a user-configured AGY_AGENT, or a
+// stageSyspromptAgent failure falling back to the legacy inline block),
+// prompt + digest could cross the ~25KB silent-drop cap while the guard
+// reported within budget — and the whole prompt was then silently dropped.
+
+/** Stream wrapper for the inline-system-prompt tests: builds the context
+ *  itself so the pi system prompt can ride the transcript. */
+function inlineSysHarness(dir: string) {
+	const store = new SessionStore(path.join(dir, "sessions.json"));
+	const seen: { opts?: DriverTurnRequest } = {};
+	const driver = scriptedDriver([], seen, "conv-fresh");
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
+		store,
+		driver,
+		roundTrips: new ToolRoundTrips(driver),
+	});
+	const run = async (
+		systemPrompt: string | undefined,
+		messages: TurnMessage[],
+	): Promise<DriverTurnRequest | undefined> => {
+		seen.opts = undefined;
+		const stream = streamSimple(
+			{ ...model, id: "gemini-flash" },
+			normalizeContext({ systemPrompt, messages }),
+			{ cwd: dir } as unknown as SimpleStreamOptions,
+		);
+		for await (const ev of stream) void ev;
+		return seen.opts;
+	};
+	return { store, storeKey: `cwd:${dir}`, run };
+}
+
+const HUGE_SYS_PROMPT = "S".repeat(21_000);
+
+test("stream-json budgets the inline system prompt of a user-configured AGY_AGENT (digest skipped, never an over-cap prompt)", async () => {
+	await withIsolatedHome(() => withEnv(
+		{ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined, AGY_SYSTEM_PROMPT: "on", AGY_AGENT: "test-agent" },
+		async () => {
+			const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-skip-sysagent-"));
+			try {
+				const h = inlineSysHarness(dir);
+				// Prompt + inline system block + digest would cross the cap;
+				// prompt + block alone must still ship, and the pending delta
+				// must be kept for a later, lighter turn.
+				const first = await h.run(HUGE_SYS_PROMPT, [
+					userMessage("m1"),
+					assistantMessage("claude", "claude says hi"),
+					userMessage("current"),
+				]);
+				const prompt = first?.prompt ?? "";
+				assert.equal(first?.agent, "test-agent", "the user-configured agent wins");
+				assert.equal(countOccurrences(prompt, SYSTEM_PROMPT_PREAMBLE), 1, "the inline block rides the prompt");
+				assert.ok(prompt.includes(HUGE_SYS_PROMPT));
+				assert.ok(prompt.includes(TOOL_PRIORITY_NOTE));
+				assert.ok(!prompt.includes("context from the broader pi session"), "an over-budget digest is skipped");
+				const rec = h.store.get(h.storeKey);
+				assert.equal(rec?.lastMessageCount, 0, "no trusted prior watermark: the delta is kept");
+
+				// A later bound turn (no inline block) delivers the held handoff.
+				const second = await h.run(HUGE_SYS_PROMPT, [
+					userMessage("m1"),
+					assistantMessage("claude", "claude says hi"),
+					assistantMessage("antigravity", "agy answered"),
+					userMessage("current fit"),
+				]);
+				assert.equal(countOccurrences(second?.prompt ?? "", SYSTEM_PROMPT_PREAMBLE), 0, "a bound turn ships no inline block");
+				assert.equal(countOccurrences(second?.prompt ?? "", "claude says hi"), 1, "the pending delta is delivered on the smaller turn");
+			} finally {
+				fs.rmSync(dir, { recursive: true, force: true });
+			}
+		},
+	));
+});
+
+test("stream-json budgets the inline system-prompt fallback after a staging failure (digest skipped, never an over-cap prompt)", async () => {
+	await withIsolatedHome(() => withEnv(
+		{ AGY_ENGINE: "stream-json", AGY_DIGEST: undefined, AGY_SYSTEM_PROMPT: "on", AGY_AGENT: undefined },
+		async () => {
+			resetSyspromptAgentForTests();
+			// An agents root that cannot be created: stageSyspromptAgent fails
+			// and the block falls back to riding the prompt inline.
+			const parent = fs.mkdtempSync(path.join(os.tmpdir(), "agy-agents-block-"));
+			const blockedRoot = path.join(parent, "not-a-dir");
+			fs.writeFileSync(blockedRoot, "not a directory", { mode: 0o600 });
+			process.env.AGY_AGENTS_ROOT = blockedRoot;
+			try {
+				const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-skip-sysfall-"));
+				try {
+					const bigSys = "T".repeat(21_000);
+					const h = inlineSysHarness(dir);
+					const first = await h.run(bigSys, [
+						userMessage("m1"),
+						assistantMessage("claude", "claude says hi"),
+						userMessage("current"),
+					]);
+					const prompt = first?.prompt ?? "";
+					assert.equal(first?.agent, undefined, "staging failed: no carrier agent");
+					assert.equal(countOccurrences(prompt, SYSTEM_PROMPT_PREAMBLE), 1, "the block falls back inline");
+					assert.ok(prompt.includes(bigSys));
+					assert.ok(prompt.includes(TOOL_PRIORITY_NOTE));
+					assert.ok(!prompt.includes("context from the broader pi session"), "an over-budget digest is skipped");
+					const rec = h.store.get(h.storeKey);
+					assert.equal(rec?.lastMessageCount, 0, "no trusted prior watermark: the delta is kept");
+				} finally {
+					fs.rmSync(dir, { recursive: true, force: true });
+				}
+			} finally {
+				delete process.env.AGY_AGENTS_ROOT;
+				fs.rmSync(parent, { recursive: true, force: true });
+			}
+		},
+	));
 });

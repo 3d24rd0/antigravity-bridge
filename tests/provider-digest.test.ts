@@ -246,3 +246,13 @@ test("digestMaxCharsForEngine: acp uncapped by the prompt, stream-json byte-budg
 	assert.equal(digestMaxCharsForEngine("stream-json", 21_000), null);
 	assert.equal(digestMaxCharsForEngine("stream-json", 25_000), null);
 });
+
+test("a cap below the truncation marker's floor squeezes a pending delta to an empty digest", () => {
+	// Below "[truncated]\n" the delta truncator cannot express a cut at all:
+	// buildContextDigest returns "" even when parts are pending. The provider
+	// uses this floor to tell a squeezed byte-budget skip apart from a
+	// genuinely empty delta window (S4).
+	const msgs = [user("a delta part that cannot fit"), user("now")];
+	assert.equal(buildContextDigest(msgs, 0, { maxChars: 12 }), "");
+	assert.ok(buildContextDigest(msgs, 0, { maxChars: 13 }).length > 0, "13 chars can express the marker");
+});
