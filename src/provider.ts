@@ -34,7 +34,7 @@ import fs from "node:fs";
 import type { Api } from "@earendil-works/pi-ai";
 import type { DriverActivity, TurnDriver, TurnHandle, TurnOutcome } from "./driver-types.js";
 import { SubagentRoster } from "./subagent-roster.js";
-import { toPiUsage } from "./stream-events.js";
+import { clampOverflowUsage, toPiUsage } from "./stream-events.js";
 import { mapAgyToolToNative } from "./native-tools.js";
 import { isAcpCapableModel, parseModelEngine, toAgyEffort, type AgyModelEntry } from "./models.js";
 import { SessionStore } from "./sessions.js";
@@ -47,6 +47,12 @@ import { buildQuotaHeaders, getLastQuotaReport } from "./usage.js";
 import { quotaNoticeError } from "./quota-notice.js";
 
 const DEFAULT_TIMEOUT_MIN = 10;
+
+/** Synthetic prompt for resuming into a fresh agy conversation right after pi
+ *  compacts mid-tool-loop (the transcript ends in a toolResult or assistant
+ *  message after the bound conversation was rotated). S1, upstream 1.13.0. */
+export const COMPACTION_RESUME_PROMPT =
+	"[The conversation was compacted into a summary and moved to a fresh Antigravity session. Continue the task from the compaction summary and any recent context above without repeating completed actions.]";
 
 /** Warned once per process: config.agent set while the system prompt needs
  *  the staged carrier agent (issue #2 inline-block fallback). */
@@ -162,6 +168,30 @@ export function sessionKey(
 	return base + (engine === "acp" ? "@acp" : "");
 }
 
+/** Rotate the bound agy conversation after pi compacts the session (S1,
+ *  upstream 1.13.0). Deleting the binding forces the next turn onto a fresh
+ *  agy conversation so server-side context is freed alongside pi's
+ *  transcript, and recording the key in `pendingCompactionHandoff` guarantees
+ *  a one-shot compaction handoff even when config.digest is disabled. The
+ *  latch arms from the provider's turn-start shrink-gated rotation detection
+ *  (a post-compaction messageCount that is not a real shrink never rotates):
+ *  the extension-level session_compact hook upstream adds stays out of this
+ *  fork by decision; this helper is the shared rotation primitive.
+ *  Returns the rotated conversation id, or null when the session had no
+ *  binding. */
+export function rotateSessionOnCompaction(
+	store: SessionStore,
+	key: string,
+	pendingCompactionHandoff?: Set<string>,
+): string | null {
+	const existing = store.get(key);
+	if (!existing) return null;
+	store.delete(key);
+	stagedAgentByConversation.delete(existing.conversationId);
+	pendingCompactionHandoff?.add(key);
+	return existing.conversationId;
+}
+
 /** Track which content block is currently open so we close-on-switch.
  *  At most one of textIdx / thinkingIdx is non-null at a time. */
 export interface BlockState {
@@ -212,6 +242,10 @@ export interface StreamSimpleDeps {
 	onNativeEvent?: (event: NativeDisplayEvent) => void;
 	/** Subagent roster (both engines); folded from every activity. */
 	roster?: SubagentRoster;
+	/** Session keys whose bound agy conversation was rotated after a pi
+	 *  compaction, awaiting a one-shot compaction handoff into a fresh agy
+	 *  conversation (S1, upstream 1.13.0). */
+	pendingCompactionHandoff?: Set<string>;
 	/** Daily file log sink (src/daily-log.ts). Records pre-dispatch turn
 	 *  errors that never create a driver turn (and so never reach onTurnEnd). */
 	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
@@ -284,6 +318,9 @@ export interface DriverDeps {
 	onNativeEvent?: (event: NativeDisplayEvent) => void;
 	/** Subagent roster fold target (both engines; best-effort telemetry). */
 	roster?: SubagentRoster;
+	/** Session keys rotated after a pi compaction awaiting the one-shot
+	 *  handoff (see StreamSimpleDeps.pendingCompactionHandoff). */
+	pendingCompactionHandoff?: Set<string>;
 	/** Active engine (config), for engine-scoped session keys. */
 	engine: "stream-json" | "acp";
 	/** Daily file log sink for pre-dispatch errors (see StreamSimpleDeps). */
@@ -549,7 +586,7 @@ async function runTurnDriver(
 	}
 	const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
 
-	const isEphemeral = options?.cacheRetention === "none";
+	const isEphemeral = options?.cacheRetention === "none" || options?.disableContinuation === true;
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 	const key = sessionKey(options, cwd, deps.engine);
 	let existing = isEphemeral ? null : store.get(key);
@@ -589,7 +626,10 @@ async function runTurnDriver(
 	// nor start a new prompt. Leave the tombstone for the next fresh pass
 	// instead of consuming it blind.
 	const late: LateToolResult[] = [];
-	if (!isContinuation) {
+	// S1 (upstream 1.13.0): ephemeral helper calls (pi compaction / branch
+	// summarization, replay-style callers) never claim dead/stranded tool
+	// results: the work belongs to the live session's next real pass.
+	if (!isEphemeral && !isContinuation) {
 		for (const r of collectToolResults(context.messages, deps.roundTrips.deadIds)) {
 			const dead = deps.roundTrips.consumeDead(r.toolCallId);
 			if (dead) late.push({ name: dead.name, reason: dead.reason, text: r.text, isError: r.isError, images: r.images });
@@ -597,7 +637,7 @@ async function runTurnDriver(
 		if (late.length > 0) {
 			deps.log?.("late-result", { tools: late.map((l) => l.name), freshConversation: !existing?.conversationId }, "info");
 		}
-	} else if (deps.roundTrips.deadIds.length > 0) {
+	} else if (!isEphemeral && deps.roundTrips.deadIds.length > 0) {
 		deps.log?.("late-result-deferred", { count: deps.roundTrips.deadIds.length }, "info");
 	}
 
@@ -623,6 +663,14 @@ async function runTurnDriver(
 			};
 		});
 
+	// S2/S3 (upstream 1.13.0): a rotation that lands mid-turn must win over
+	// any bind of a PRE-ROTATION conversation. Continuations and strand
+	// redeliveries both target the old conversation id, so binding their
+	// outcomes would restore the rotated-away binding and swallow the
+	// handoff. Evaluated at bind time: the latch may arm after turn start.
+	const rotationGuardArmed = (): boolean =>
+		(isContinuation || redeliveryConversation !== undefined) &&
+		deps.pendingCompactionHandoff?.has(key) === true;
 	const { baseId } = parseModelEngine(model.id);
 	const entry = entries.find((e) => e.id === baseId || e.id === model.id) ?? null;
 	const agyModel = entry?.full ?? baseId;
@@ -648,10 +696,11 @@ async function runTurnDriver(
 				},
 				"info",
 			);
-			store.delete(key);
-			if (existing.conversationId) {
-				stagedAgentByConversation.delete(existing.conversationId);
-			}
+			// S1 (upstream 1.13.0): the shared rotation primitive. The one-shot
+			// compaction handoff latch arms ONLY on a real shrink
+			// (sessionCompacted) — never on a model switch, whose fresh
+			// conversation needs no compaction summary.
+			rotateSessionOnCompaction(store, key, sessionCompacted ? deps.pendingCompactionHandoff : undefined);
 			existing = null;
 			// The rotated conversation has seen NOTHING, so whatever summary the old
 			// record delivered is irrelevant to it: ship the current one.
@@ -663,6 +712,14 @@ async function runTurnDriver(
 		}
 	}
 
+	// S1 (upstream 1.13.0): a one-shot compaction handoff pending for this
+	// session key — armed by the rotation above (or by an earlier rotation
+	// whose handoff has not shipped), consumed by the next SUCCESSFUL bind.
+	// Evaluated after the rotation block so a rotation detected on THIS turn
+	// counts for this turn too. A post-compaction messageCount that is not a
+	// real shrink never arms it (the shrink gate is above).
+	const compactionHandoff =
+		!isEphemeral && !existing?.conversationId && deps.pendingCompactionHandoff?.has(key) === true;
 	// Digest window. The stored count is trusted only when the transcript
 	// still carries the same boundary message it had when the count was
 	// taken: a rewrite under the count (/tree, /fork, a context hook) moves
@@ -717,7 +774,8 @@ async function runTurnDriver(
 	} else {
 		// Dead turn: claim NOW (single-use). A live turn claims after outcome
 		// instead — claiming here would eat the post-outcome recovery.
-		late.push(...collectStranded());
+		// Ephemeral turns never claim: see the S1 note on the late path above.
+		if (!isEphemeral) late.push(...collectStranded());
 		if (isContinuation && late.length === 0) {
 			if (escalatedNames.length === 0) {
 				deps.log?.("turn-error", { reason: "tool-result-no-active-turn" }, "warn");
@@ -742,8 +800,27 @@ async function runTurnDriver(
 			return;
 		}
 		// Fresh pass, or a stranded escalated result being re-delivered.
-		const prompt = extractUserPrompt(context);
+		const foundPrompt = extractUserPrompt(context);
 		const images = extractImages(context);
+		// S1 (upstream 1.13.0): post-compaction mid-tool-loop resume — the old
+		// agy conversation was rotated (no binding) and pi's compacted
+		// transcript ends in a toolResult or assistant message with no user
+		// prompt. Seed a fresh agy conversation with the compaction summary +
+		// trailing messages (includeLast digest) instead of failing with the
+		// unretryable "No user message" error. Non-compaction unbound tails
+		// keep the old hard error.
+		const lastRole = context.messages[context.messages.length - 1]?.role;
+		const hasCompactionSummary = findLastCompactionIdx(context.messages) >= 0;
+		const compactionResume =
+			!isEphemeral &&
+			!foundPrompt &&
+			images.length === 0 &&
+			late.length === 0 &&
+			!existing?.conversationId &&
+			(compactionHandoff || hasCompactionSummary) &&
+			(lastRole === "toolResult" || lastRole === "assistant");
+		const prompt = compactionResume ? COMPACTION_RESUME_PROMPT : foundPrompt;
+		if (compactionResume) deps.log?.("compaction-resume-turn", { key, handoff: compactionHandoff }, "info");
 		// An image-only message (no text) is valid on the ACP engine; only fail
 		// when there is nothing at all to send (no text, no images, no late
 		// tool results to deliver).
@@ -821,7 +898,13 @@ async function runTurnDriver(
 		// (bound: false), since agy's DB holds none of them. A still-pending
 		// rotation handoff (S4 retry after a byte-budget skip) forces the gate
 		// for the same reason.
-		const digestGate = late.length === 0 && (config.digest || compactedRotation || retryRotation);
+		// The compaction handoff (S1) and the compaction resume turn ship the
+		// digest once even with config.digest off: the rotated-away
+		// conversation never saw it, and a tail-seeded fresh conversation holds
+		// nothing.
+		const digestGate =
+			late.length === 0 &&
+			(config.digest || compactedRotation || retryRotation || compactionHandoff || compactionResume);
 		if (!digestGate) {
 			gateClosedBy = late.length > 0 ? "late" : "config";
 		}
@@ -840,6 +923,7 @@ async function runTurnDriver(
 				// and so does the retry of a skipped NON-rotation fresh handoff
 				// (the fresh conversation holds none of those turns either).
 				...(compactedRotation || retryRotation || retryFresh ? { ownProvider: "" } : {}),
+				includeLast: compactionResume,
 			});
 		}
 		// Byte guard under the char cap: an over-cap prompt is silently dropped by
@@ -874,6 +958,7 @@ async function runTurnDriver(
 					seenSummaryId: existing?.digestSummaryId,
 					maxChars: DIGEST_MAX_CHARS,
 					...(compactedRotation || retryRotation || retryFresh ? { ownProvider: "" } : {}),
+					includeLast: compactionResume,
 				}) !== "";
 		}
 		digestShipped = digestFinal !== "";
@@ -984,7 +1069,7 @@ async function runTurnDriver(
 		// conversation now: a first-ever turn that parks and then dies (failed
 		// continuation, process restart) otherwise left no record to resume from.
 		// First binding only - an existing conversation is never moved.
-		if (!isEphemeral && !existing?.conversationId) {
+		if (!isEphemeral && !existing?.conversationId && !rotationGuardArmed()) {
 			const parkedConversation = deps.driver.snapshot().conversationId;
 			if (parkedConversation) {
 				store.set(key, {
@@ -1015,6 +1100,8 @@ async function runTurnDriver(
 					// it is consumed here, symmetric with the clean-OK settle below.
 					digestSkipPending.delete(parkedConversation);
 				}
+				// S1: a successful bind consumes the one-shot compaction handoff.
+				deps.pendingCompactionHandoff?.delete(key);
 				deps.log?.("park-binding", { conversation: parkedConversation }, "info");
 			}
 		} else if (digestShipped && existing?.conversationId) {
@@ -1083,7 +1170,7 @@ async function runTurnDriver(
 	// fix: sweep and deliver as a late run in the same conversation. Single
 	// shot: claims are single-use, so a re-delivered strand cannot reappear
 	// here; a late run that parks hands recovery to the next pi pass.
-	if (isContinuation && outcome.status === "OK" && !outcome.aborted) {
+	if (!isEphemeral && isContinuation && outcome.status === "OK" && !outcome.aborted) {
 		const more = collectStranded();
 		if (more.length > 0) {
 			const conv = outcome.conversationId ?? existing?.conversationId ?? redeliveryConversation ?? null;
@@ -1143,6 +1230,16 @@ async function runTurnDriver(
 			store.delete(key);
 			stagedAgentByConversation.delete(existing.conversationId);
 		} else if (outcome.status === "OK" && !outcome.aborted && !quotaError) {
+			if (rotationGuardArmed()) {
+				// S2/S3 (upstream 1.13.0): a session rotation landed while this
+				// pass was parked in (or redelivering into) the OLD conversation.
+				// Rebiding would restore the rotated-away binding and swallow the
+				// one-shot handoff; leave the binding deleted and the latch (and
+				// any point-7 skip marker) untouched so the next pass takes the
+				// compaction-resume path and delivers the summary into a fresh
+				// conversation.
+				deps.log?.("rotation-binding-deferred", { conversation: outcome.conversationId, key }, "info");
+			} else {
 			// A parked skip bound the conversation pending this same delta: the
 			// continuation must not consume it. "hold" clears after this settle;
 			// a pending "rotation" or "fresh" handoff stays until it ships.
@@ -1200,6 +1297,9 @@ async function runTurnDriver(
 				// pending handoff is deliberately dropped together with the normally
 				// settled window (no stale marker, no later duplicate re-ship).
 				digestSkipPending.delete(outcome.conversationId);
+			}
+			// S1: a successful bind consumes the one-shot compaction handoff.
+			deps.pendingCompactionHandoff?.delete(key);
 			}
 		}
 		// A failed or aborted turn on the SAME conversation keeps the pre-turn
@@ -1276,6 +1376,12 @@ async function runTurnDriver(
 		blocks.partial.usage.input = contextInputTokens;
 		blocks.partial.usage.totalTokens = contextInputTokens + blocks.partial.usage.output;
 	}
+	// S1 (upstream 1.13.0): multi-inference billing sums in usage.input +
+	// usage.cacheRead can exceed model.contextWindow even when live occupancy
+	// (totalTokens) is well under the window. Clamp before emitting stop so
+	// pi-ai's isContextOverflow() Case 2 does not trigger a phantom overflow
+	// compaction on a healthy turn.
+	clampOverflowUsage(blocks.partial.usage, model.contextWindow);
 	finalize(stream, blocks, "stop");
 }
 
@@ -1342,6 +1448,7 @@ export function createStreamSimple(
 				nativeActive: deps.nativeActive,
 				onNativeEvent: deps.onNativeEvent,
 				roster: deps.roster,
+				pendingCompactionHandoff: deps.pendingCompactionHandoff,
 				// Record the engine of the driver that will ACTUALLY run: if the
 				// ACP driver is absent, the config switch falls back to stream,
 				// and keying the session as @acp would store a stream
