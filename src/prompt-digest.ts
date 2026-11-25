@@ -131,6 +131,11 @@ export interface DigestOptions {
 	 *  the front, so every compaction lands at the same index; content
 	 *  identity ships a NEW summary exactly once. */
 	seenSummaryId?: string;
+	/** Include the trailing message in the delta window instead of reserving
+	 *  it as the current user prompt. Used when resuming into a fresh
+	 *  post-compaction conversation whose transcript ends in a toolResult or
+	 *  assistant message. Default false. */
+	includeLast?: boolean;
 }
 
 /** Soft cap on the digest body when no tighter budget applies. */
@@ -249,7 +254,7 @@ export function buildContextDigest(
 	} else if (watermark > messages.length) {
 		start = 0;
 	}
-	const end = Math.max(0, messages.length - 1);
+	const end = opts.includeLast ? messages.length : Math.max(0, messages.length - 1);
 	for (let i = start; i < end; i++) {
 		const m = messages[i];
 		if (m.role === "assistant") {

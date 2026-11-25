@@ -136,3 +136,39 @@ export function toPiUsage(
 			? Math.max(u.total_tokens ?? 0, cachedInput + piUsage.output)
 			: Math.max(u.total_tokens ?? 0, piUsage.input + piUsage.output);
 }
+
+/**
+ * Prevent pi-ai's silent-overflow detector (`isContextOverflow` Case 2) from
+ * false-triggering on multi-inference billing sums (S1, upstream 1.13.0).
+ *
+ * In multi-step turns (several tool inferences inside one prompt), agy sums
+ * `input_tokens` and `cache_read_tokens` across every inference. When live
+ * occupancy (`totalTokens`) fits inside `contextWindow` but
+ * `input + cacheRead` exceeds it, scale `input` and `cacheRead`
+ * proportionally to fit within the single-turn budget (preserving the
+ * cache-hit ratio). Normal turns (`input + cacheRead <= contextWindow`) and
+ * genuine silent overflows (`totalTokens > contextWindow`) are left
+ * untouched. Defense-in-depth on this fork: the activity-level usage guard
+ * already rejects oversized candidates while the transcript is far from the
+ * window; this catches anything that still reaches the settle path.
+ */
+export function clampOverflowUsage(
+	usage: { input: number; output: number; cacheRead: number; totalTokens: number },
+	contextWindow: number | undefined,
+): void {
+	if (contextWindow === undefined || !Number.isFinite(contextWindow) || contextWindow <= 0) return;
+	if (!Number.isFinite(usage.totalTokens) || usage.totalTokens <= 0) return;
+	if (usage.totalTokens > contextWindow) return;
+	if (!Number.isFinite(usage.input) || !Number.isFinite(usage.cacheRead)) return;
+	if (usage.input < 0 || usage.cacheRead < 0) return;
+	const rawInput = usage.input + usage.cacheRead;
+	if (rawInput <= contextWindow) return;
+
+	const target =
+		Number.isFinite(usage.output) && usage.output >= 0 && usage.output < usage.totalTokens
+			? usage.totalTokens - usage.output
+			: usage.totalTokens;
+	const scaledInput = Math.min(target, Math.max(0, Math.round((usage.input / rawInput) * target)));
+	usage.input = scaledInput;
+	usage.cacheRead = target - scaledInput;
+}
