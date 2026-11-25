@@ -73,7 +73,7 @@ import { setupAuthUrlCapture } from "./acp/browser-capture.js";
 import { clearAcpAuthVerified, ensureAcpReady, inspectAcpSetup, resolveInstalledBinary } from "./acp/setup.js";
 import { checkAcpUpdate } from "./acp/update.js";
 import type { TurnDriver, TurnOutcome } from "./driver-types.js";
-import { loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "./config.js";
+import { configWarningsMessage, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "./config.js";
 import { agyMissingMessage, isAgyInstalled } from "./engine-picker.js";
 import { checkAgyCliVersion, describeAgyVersionCheck, MIN_AGY_VERSION, agyVersionVerdict } from "./agy-version.js";
 import { isValidAgyAgentName, listAgyAgents } from "./agents.js";
@@ -127,6 +127,16 @@ let activeUi: ExtensionUIContext | null = null;
 
 function resolveAgyBinary(): string {
 	return process.env.AGY_BIN || "agy";
+}
+
+/** Surface parse fallbacks from config.json where they happen: a hand editor
+ *  never runs /agy (issue #23). Warn surface mirrors our other startup
+ *  warnings: toast through the captured sink, stderr when headless. */
+export function notifyConfigWarnings(ui: UiSink): void {
+	const warnings = loadConfig().parseWarnings;
+	if (!warnings?.length) return;
+	const msg = configWarningsMessage(warnings);
+	if (!ui.notify(msg, "warning")) console.error(`[antigravity-bridge] ${msg}`);
 }
 
 export default async function (pi: ExtensionAPI): Promise<void> {
@@ -732,6 +742,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			const msg = agyMissingMessage();
 			if (!ui.notify(msg, "warning")) console.error(`[antigravity-bridge] ${msg}`);
 		}
+		// Unparseable config.json booleans: warn once per session start so a hand
+		// editor sees the fallbacks without ever running /agy (issue #23).
+		notifyConfigWarnings(ui);
 		// Version gate: an agy older than MIN_AGY_VERSION fails turns with raw stream errors.
 		if (!agyVersionWarned && isAgyInstalled(binary)) {
 			void checkAgyCliVersion(binary).then((check) => {
