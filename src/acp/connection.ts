@@ -223,6 +223,9 @@ export class AcpConnection {
 	#killed = false;
 	#suppressUpdates = false;
 	#updateSessionId: string | null = null;
+	/** Sessions this server process created or loaded and may reuse without
+	 *  session/load (issue #21). */
+	#heldSessions = new Set<string>();
 	agentInfo: Record<string, unknown> | undefined;
 	/** Last known mode/model config echo from set_config_option results. */
 	lastConfigOptions: unknown = undefined;
@@ -387,9 +390,25 @@ export class AcpConnection {
 			throw new Error("ACP session/new returned no sessionId");
 		}
 		this.#updateSessionId = sessionId;
+		this.#heldSessions.add(sessionId);
 		this.lastConfigOptions = result.configOptions;
 		this.planTier = parsePlanTier(result);
 		return { sessionId };
+	}
+
+	/** Select a session this process already holds, without session/load.
+	 *  Re-loading a held session restarts agy's update stream, and the old
+	 *  stream's completion signal can land after the next session/prompt and
+	 *  end it early with replayed history (agy 1.5.13 race). */
+	reuseSession(sessionId: string): boolean {
+		if (!this.#heldSessions.has(sessionId)) return false;
+		this.#updateSessionId = sessionId;
+		return true;
+	}
+
+	/** Forget a held session after a failure; the next touch reloads it. */
+	dropSession(sessionId: string): void {
+		this.#heldSessions.delete(sessionId);
 	}
 
 	async loadSession(sessionId: string, cwd: string): Promise<void> {
@@ -405,6 +424,7 @@ export class AcpConnection {
 			))) as Record<string, unknown> | undefined;
 			this.lastConfigOptions = result?.configOptions;
 			this.planTier = parsePlanTier(result);
+			this.#heldSessions.add(sessionId);
 		} finally {
 			this.updateSuppression = false;
 		}

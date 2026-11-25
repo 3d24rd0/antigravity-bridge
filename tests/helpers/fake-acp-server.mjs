@@ -36,6 +36,14 @@
 //   tool-fail-then-success native tool fails, a second one completes, no
 //                      model text (note still fires, reports the earlier
 //                      failure)
+//   reuse-retry        turn 1's prompt ok; turn 2's prompt (a held session)
+//                      -> -32000 (dropped session); prompt 3+ ok (driver
+//                      must drop, reload, and re-prompt once — issue #21)
+//   reuse-retry-late   turn 2's prompt emits a "PARTIAL" chunk THEN -32000
+//                      (activity gate: a turn that already streamed output
+//                      must not retry)
+//   reuse-retry-dead   turn 2's prompt -> -32000 AND session/load -> -32000
+//                      (a failed retry reload settles ERROR)
 
 import fs from "node:fs";
 import readline from "node:readline";
@@ -45,6 +53,7 @@ const sessionId = "fake-session-0001";
 let pendingPromptId = null;
 let streaming = false;
 let lateLoadId = null;
+let promptCount = 0;
 const timers = [];
 
 // Mimic RC01's signal handler: intercept SIGTERM and linger before dying, so
@@ -226,7 +235,7 @@ async function handle(msg) {
         });
         notifyChunk("OLD REPLY FULL TEXT");
       }
-      if (scenario === "load-fails") {
+      if (scenario === "load-fails" || scenario === "reuse-retry-dead") {
         error(id, -32000, "unknown session");
         return;
       }
@@ -242,6 +251,7 @@ async function handle(msg) {
       return;
 
     case "session/prompt": {
+      promptCount += 1;
       pendingPromptId = id;
       // Multi-turn: each new prompt replays the scenario's frames again.
       streaming = false;
@@ -388,6 +398,17 @@ async function handle(msg) {
         // Die with the request still parked: the client must settle the
         // pending permission and fail the turn, never hang.
         setTimeout(() => process.exit(0), 50);
+        return;
+      }
+      if (scenario === "reuse-retry" && promptCount === 2) {
+        error(id, -32000, "unknown session");
+        pendingPromptId = null;
+        return;
+      }
+      if ((scenario === "reuse-retry-late" || scenario === "reuse-retry-dead") && promptCount === 2) {
+        if (scenario === "reuse-retry-late") notifyChunk("PARTIAL");
+        error(id, -32000, "unknown session");
+        pendingPromptId = null;
         return;
       }
       await streamPrompt();
