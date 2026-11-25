@@ -99,6 +99,11 @@ function zeroUsage(): Usage {
 import {
 	extractUserPrompt,
 	extractImages,
+	lastMessageParts,
+	extractTrailingUserRun,
+	isBacklogUserShape,
+	BRANCH_SUMMARY_PREFIX,
+	BASH_RUN_PREFIX,
 	buildFullPrompt,
 	buildContextDigest,
 	blocksToText,
@@ -120,6 +125,11 @@ import {
 export {
 	extractUserPrompt,
 	extractImages,
+	lastMessageParts,
+	extractTrailingUserRun,
+	isBacklogUserShape,
+	BRANCH_SUMMARY_PREFIX,
+	BASH_RUN_PREFIX,
 	buildFullPrompt,
 	buildContextDigest,
 	blocksToText,
@@ -597,6 +607,8 @@ async function runTurnDriver(
 	// the compaction summary identity this turn delivered (never re-injected).
 	const settleBoundary = boundaryFingerprint(context.messages[messageCount - 1]);
 	let settleSummaryId = existing?.digestSummaryId;
+	// S1 (upstream 1.13.0): fresh-pass run extraction, below, relies on the
+	// validated watermark computed after the rotation handling (see below).
 
 	// Continuation: resolve parked round-trips from pi's toolResult messages,
 	// then re-attach to the still-running agy turn. No new user event is sent:
@@ -728,14 +740,16 @@ async function runTurnDriver(
 	// one-time full-history dump on upgrade); a mismatch falls back to the
 	// full delta. Hoisted because the settle paths below (park binding, clean
 	// OK) must know the previous watermark, not just this turn's digest.
+	// boundaryTrusted (upstream b5e9bd3 / issue #24): an untrusted count also
+	// collapses the trailing user run to the last message - joining across an
+	// unknown boundary could re-execute a half-run task.
 	const rawWatermark = existing?.lastMessageCount ?? 0;
 	const storedBoundary = existing?.digestBoundary;
-	const watermark =
-		rawWatermark > 0 &&
-		(storedBoundary === undefined ||
-			storedBoundary === boundaryFingerprint(context.messages[rawWatermark - 1]))
-			? rawWatermark
-			: 0;
+	const boundaryTrusted =
+		rawWatermark === 0 ||
+		storedBoundary === undefined ||
+		storedBoundary === boundaryFingerprint(context.messages[rawWatermark - 1]);
+	const watermark = rawWatermark > 0 && boundaryTrusted ? rawWatermark : 0;
 	// S4 settle values for a byte-budget skip: the PREVIOUS watermark and its
 	// boundary (0/undefined when there was no trusted prior watermark), so the
 	// pending delta is not consumed and a later, smaller turn re-delivers it.
@@ -800,8 +814,12 @@ async function runTurnDriver(
 			return;
 		}
 		// Fresh pass, or a stranded escalated result being re-delivered.
-		const foundPrompt = extractUserPrompt(context);
-		const images = extractImages(context);
+		// Watermark first: the trailing user run is left-bounded by it, so
+		// failed-turn backlog never joins the prompt (issue #24 / issue #1).
+		// The hoisted watermark above is already the validated count.
+		const run = extractTrailingUserRun(context.messages, watermark, boundaryTrusted);
+		const foundPrompt = run.prompt;
+		const images = run.images;
 		// S1 (upstream 1.13.0): post-compaction mid-tool-loop resume — the old
 		// agy conversation was rotated (no binding) and pi's compacted
 		// transcript ends in a toolResult or assistant message with no user
@@ -887,7 +905,38 @@ async function runTurnDriver(
 			deps.engine !== "acp" && sysPrompt
 				? Buffer.byteLength(buildFullPrompt(sysPrompt, "", "") + "\n\n---\n\n", "utf8")
 				: 0;
-		const promptBytes = Buffer.byteLength(prompt ?? "", "utf8") + inlineSysPromptBytes;
+		// A joined run can outgrow the stream-json silent-drop cap on its own
+		// (upstream b5e9bd3 / issue #24): the digest budget used to absorb these
+		// bytes. Truncate oldest-first, keeping the newest run members; the
+		// inline system-prompt fallback shares the same budget (I2). Synthetic
+		// resume prompts have no run behind them and keep their existing
+		// behavior.
+		let deliveredPrompt = prompt ?? "";
+		let runTruncated = false;
+		if (deps.engine !== "acp" && run.texts.length > 0) {
+			const budget = STREAM_JSON_PROMPT_CAP - STREAM_JSON_PROMPT_MARGIN - inlineSysPromptBytes;
+			if (Buffer.byteLength(deliveredPrompt, "utf8") > budget) {
+				const kept: string[] = [];
+				let used = 0;
+				for (let i = run.texts.length - 1; i >= 0; i--) {
+					const cost = Buffer.byteLength(run.texts[i], "utf8") + 2;
+					if (used + cost > budget - 16) break;
+					kept.unshift(run.texts[i]);
+					used += cost;
+				}
+				runTruncated = true;
+				if (kept.length > 0) {
+					deliveredPrompt = `[truncated]\n${kept.join("\n\n")}`;
+				} else {
+					// A single member bigger than the whole budget: hard-slice it
+					// (visible truncation) rather than ship a silently dropped
+					// turn (issue #2) or an empty prompt.
+					const head = Buffer.from(run.texts[run.texts.length - 1], "utf8").subarray(0, Math.max(0, budget - 32));
+					deliveredPrompt = `[truncated]\n${head.toString("utf8")}`;
+				}
+			}
+		}
+		const promptBytes = Buffer.byteLength(deliveredPrompt, "utf8") + inlineSysPromptBytes;
 		const maxChars = digestMaxCharsForEngine(deps.engine, promptBytes);
 		// Late turns re-open the conversation with a synthetic prompt; the digest
 		// would re-send context agy already holds, so skip it. A compaction
@@ -909,7 +958,7 @@ async function runTurnDriver(
 			gateClosedBy = late.length > 0 ? "late" : "config";
 		}
 		let digest = "";
-		if (digestGate) {
+		if (digestGate && !runTruncated) {
 			digest = buildContextDigest(context.messages, watermark, {
 				bound: Boolean(existing?.conversationId),
 				seenSummaryId: existing?.digestSummaryId,
@@ -923,6 +972,11 @@ async function runTurnDriver(
 				// and so does the retry of a skipped NON-rotation fresh handoff
 				// (the fresh conversation holds none of those turns either).
 				...(compactedRotation || retryRotation || retryFresh ? { ownProvider: "" } : {}),
+				// The trailing user run joins the prompt (issue #24), so its members
+				// must not reappear as digest continuity context: the window stops
+				// at the run's start. A compaction-resume tail has no run behind it
+				// (runStart = length), which is exactly the old includeLast window.
+				end: run.runStart,
 				includeLast: compactionResume,
 			});
 		}
@@ -958,6 +1012,23 @@ async function runTurnDriver(
 					seenSummaryId: existing?.digestSummaryId,
 					maxChars: DIGEST_MAX_CHARS,
 					...(compactedRotation || retryRotation || retryFresh ? { ownProvider: "" } : {}),
+					end: run.runStart,
+					includeLast: compactionResume,
+				}) !== "";
+		}
+		if (deps.engine !== "acp" && digestGate && runTruncated) {
+			// The truncated joined run spent the byte budget on its own (upstream
+			// b5e9bd3): the digest would never fit beside it. Our S4 semantics
+			// apply unchanged (upstream lacks them): the pending delta is NOT
+			// consumed - a later, smaller turn re-delivers it. Probing the
+			// UNCLAMPED window separates a genuinely empty delta from a real one.
+			digestSkipped =
+				buildContextDigest(context.messages, watermark, {
+					bound: Boolean(existing?.conversationId),
+					seenSummaryId: existing?.digestSummaryId,
+					maxChars: DIGEST_MAX_CHARS,
+					...(compactedRotation || retryRotation || retryFresh ? { ownProvider: "" } : {}),
+					end: run.runStart,
 					includeLast: compactionResume,
 				}) !== "";
 		}
@@ -980,8 +1051,8 @@ async function runTurnDriver(
 		const embeddedDigest = deps.engine === "acp" && digestFinal ? digestFinal : undefined;
 		const fullPrompt =
 			late.length > 0
-				? buildLateResultPrompt(late, prompt || undefined)
-				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, prompt ?? "");
+				? buildLateResultPrompt(late, deliveredPrompt || undefined)
+				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digestFinal, deliveredPrompt);
 		try {
 			handle = await deps.driver.run({
 				cwd,

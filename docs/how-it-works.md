@@ -161,6 +161,7 @@ Pi and `agy` both keep conversations; the bridge keeps them in step.
 | Concern | Mechanism |
 |---|---|
 | Binding | `sessions.json` maps a Pi session to an `agy` conversation id |
+| Trailing prompt stack | Pi stacks the user prompt, queued nextTurn messages and before_agent_start notes as consecutive `user` messages at the transcript tail; the provider joins the whole run into ONE agy prompt (joined with blank lines) instead of sending only the last message. The run is left-bounded by the validated watermark (failed-turn backlog never re-executes) and stops at any non-`user` message or backlog shape (compaction summary, branch summary, bash run); a `toolResult`/assistant tail is not a user run at all and keeps the compaction-resume path. A fresh conversation therefore also receives a stacked backlog as one joined prompt rather than digest fragments. On the CLI a joined run larger than the ~25KB silent-drop budget truncates oldest-first with a visible `[truncated]` marker, and the window's digest budget is treated as spent (a pending delta stays marked and re-delivers on a later smaller turn) |
 | Context digest | **On by default and self-gating**: Pi-side context (compaction summaries, turns handled by other providers or Pi's own tools) ships only when the delta window is non-empty, and each piece ships once. A fresh conversation (model switch, recreation) gets the full handoff; a pure-Antigravity conversation has an empty delta, so its prompts stay byte-identical and `agy`'s prompt cache keeps hitting. On the CLI the digest is budgeted in UTF-8 bytes under the ~25KB silent-drop cap and skipped when it does not fit |
 | System prompt | Staged once per conversation (agent file on CLI, inline on ACP) so the prompt cache survives |
 | Model switch | A conversation is bound to the model that created it, so switching rotates the binding |
@@ -227,6 +228,16 @@ can display the waiting state.
 
 Every setting has an `AGY_*` override. The environment wins over `config.json`
 and is never written back to it.
+
+Boolean `config.json` keys (`skipPermissions`, `readOnly`, `askTool`,
+`webTools`, `digest`, `systemPrompt`) take JSON booleans, the `/agy` vocabulary
+as strings (`on`/`off`, `1`/`0`, case and whitespace tolerated), and the JSON
+numbers `0`/`1`; hand-edited `"digest": "false"` means OFF instead of silently
+on. Unrecognized values fall back to the key's default — `readOnly` fails
+closed to `true` — and warn at startup (`/agy doctor` lists the per-value
+detail). While an `AGY_*` env var is set, the matching file value is never
+parsed, so it emits no warning for the value it overrides. The `AGY_*` env
+vars keep their own grammars as documented below.
 
 | Variable | Values | Meaning |
 |---|---|---|

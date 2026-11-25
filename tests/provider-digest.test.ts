@@ -256,3 +256,13 @@ test("a cap below the truncation marker's floor squeezes a pending delta to an e
 	assert.equal(buildContextDigest(msgs, 0, { maxChars: 12 }), "");
 	assert.ok(buildContextDigest(msgs, 0, { maxChars: 13 }).length > 0, "13 chars can express the marker");
 });
+
+// The window can stop at an explicit end (trailing user run joins the
+// prompt, upstream b5e9bd3 / issue #24).
+test("digest: the window can stop at an explicit end (trailing user run joins the prompt)", () => {
+	const msgs = [user("backlog question"), user("current prompt"), user("note")];
+	const digest = buildContextDigest(msgs, 0, { bound: false, end: 1 });
+	assert.ok(digest.includes("backlog question"), "pre-run backlog stays digest context");
+	assert.ok(!digest.includes("current prompt"), "joined prompt members must not reappear in the digest");
+	assert.ok(!digest.includes("note"), "the whole run is excluded, not just the last message");
+});

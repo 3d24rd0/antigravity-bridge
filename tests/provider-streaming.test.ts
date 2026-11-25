@@ -694,6 +694,16 @@ function userMessage(content: string, timestamp: number = stamp(content)) {
 	return { role: "user" as const, content, timestamp };
 }
 
+/** Over-cap joined run (upstream b5e9bd3 / issue #24): the prompt hard-slices
+ *  with a visible marker instead of shipping whole or silently dropping. */
+function assertTruncatedRun(prompt: string | undefined, label: string): void {
+	const delivered = prompt ?? "";
+	assert.ok(delivered.startsWith("[truncated]"), `${label}: over-cap prompt truncates visibly`);
+	assert.ok(delivered.includes("漢"), `${label}: the sliced head keeps the prompt intent`);
+	assert.ok(Buffer.byteLength(delivered, "utf8") <= STREAM_JSON_PROMPT_CAP, `${label}: the delivered prompt fits the cap`);
+	assert.doesNotMatch(delivered, /context from the broader pi session/, `${label}: no digest beside a sliced prompt`);
+}
+
 function assistantMessage(provider: string, text: string, timestamp: number = stamp(`${provider}:${text}`)) {
 	return {
 		role: "assistant" as const,
@@ -1045,14 +1055,16 @@ test("stream-json budgets the prompt and the digest in UTF-8 bytes, not characte
 			const cjk = (n: number) => "漢".repeat(n);
 
 			// (a) The prompt alone exhausts the byte budget: 8k CJK chars are ~24KB
-			// although the character count looks harmless.
+			// although the character count looks harmless. Under trailing-run
+			// extraction (upstream b5e9bd3) the over-cap prompt hard-slices with
+			// a visible marker instead of shipping whole.
 			const bigPrompt = cjk(8_000);
 			const a = await h.turn([
 				userMessage("earlier context"),
 				assistantMessage("claude", "claude says hi"),
 				userMessage(bigPrompt),
 			]);
-			assert.equal(a?.prompt, bigPrompt, "digest skipped when the prompt's UTF-8 bytes exhaust the cap");
+			assertTruncatedRun(a?.prompt, "digest skipped when the prompt's UTF-8 bytes exhaust the cap");
 
 			// (b) The DIGEST is multibyte: it fits the 8000-char cap but overflows
 			// the remaining byte budget, so stream-json must skip it (agy silently
@@ -1232,7 +1244,7 @@ test("a prompt that alone exhausts the byte budget skips the digest without cons
 				assistantMessage("claude", "context note"),
 				userMessage(bigPrompt),
 			]);
-			assert.equal(skipped?.prompt, bigPrompt, "the prompt ships, the digest does not");
+			assertTruncatedRun(skipped?.prompt, "the prompt ships (sliced), the digest does not");
 			const rec = h.store.get(key);
 			assert.equal(rec?.lastMessageCount, 2, "the previous watermark is kept");
 			assert.equal(rec?.digestBoundary, `user:${stamp("m2")}`, "the previous boundary is kept");
@@ -1410,7 +1422,7 @@ test("a byte-budget-skipped non-rotation fresh handoff retries in fresh shape (o
 				"claude-sonnet",
 			);
 			assert.equal(skipped?.conversationId, null, "the model switch starts a fresh conversation");
-			assert.equal(skipped?.prompt, bigPrompt, "the handoff digest is skipped for byte budget");
+			assertTruncatedRun(skipped?.prompt, "the handoff digest is skipped for byte budget");
 			const rec = h.store.get(key);
 			assert.equal(rec?.lastMessageCount, 0, "no trusted prior watermark: keep 0");
 			assert.equal(rec?.digestBoundary, undefined);
@@ -1428,7 +1440,7 @@ test("a byte-budget-skipped non-rotation fresh handoff retries in fresh shape (o
 				],
 				"claude-sonnet",
 			);
-			assert.equal(skipped2?.prompt, `second${bigPrompt}`, "the digest is still skipped");
+			assertTruncatedRun(skipped2?.prompt, "the digest is still skipped");
 
 			// A smaller retry turn ships the held handoff in fresh shape: the
 			// own-provider assistant turn from BEFORE the switch ships, because
@@ -1546,7 +1558,7 @@ test("a fresh-shape handoff that ships on a parked turn clears the pending marke
 			});
 			await run([userMessage("m1"), assistantMessage("antigravity", "pre-switch agy answer"), userMessage(bigPrompt)]);
 			assert.equal(requests[0]?.conversationId, null, "the model switch starts a fresh conversation");
-			assert.equal(requests[0]?.prompt, bigPrompt, "the handoff digest is skipped for byte budget");
+			assertTruncatedRun(requests[0]?.prompt, "the handoff digest is skipped for byte budget");
 
 			// The shipping turn: the pending fresh handoff SHIPS (own-provider
 			// turns included) — and the turn parks on a bridge call.
@@ -1608,7 +1620,7 @@ test("a digest-off turn settles normally and drops a pending fresh handoff (no l
 				"claude-sonnet",
 			);
 			assert.equal(skipped?.conversationId, null, "the model switch starts a fresh conversation");
-			assert.equal(skipped?.prompt, bigPrompt, "the handoff digest is skipped for byte budget");
+			assertTruncatedRun(skipped?.prompt, "the handoff digest is skipped for byte budget");
 
 			// The user turns the digest OFF for the next turn.
 			const prevDigest = process.env.AGY_DIGEST;
@@ -1701,7 +1713,7 @@ test("a late-result turn that closes the digest gate keeps the pending window (h
 			// Turn 1: the model switch rotates and the fresh handoff is skipped.
 			await run([userMessage("m1"), assistantMessage("antigravity", "pre-switch agy answer"), userMessage(bigPrompt)]);
 			assert.equal(requests[0]?.conversationId, null, "the model switch starts a fresh conversation");
-			assert.equal(requests[0]?.prompt, bigPrompt, "the handoff digest is skipped for byte budget");
+			assertTruncatedRun(requests[0]?.prompt, "the handoff digest is skipped for byte budget");
 
 			// A dead park closes the digest gate for the late-result turn.
 			const dead = roundTrips.onToolCall("call-9", "AskClaude", {}, new AbortController().signal);
