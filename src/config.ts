@@ -210,6 +210,11 @@ export interface AgyConfig {
 	 *  round-trip; this covers the rest. Default auto (off until a
 	 *  third-party permission extension is detected). */
 	approvals: GateConfig;
+	/** In-memory only: parse fallbacks collected by loadConfig for hand-edited
+	 *  config.json boolean/enum fields that could not be honored (issue #23).
+	 *  Surfaced at startup via notifyConfigWarnings (entry.ts); never persisted
+	 *  by saveConfig, and always undefined for a pristine file. */
+	parseWarnings?: readonly string[];
 }
 
 const DEFAULTS: AgyConfig = {
@@ -252,6 +257,85 @@ export function parseCapMinutes(raw: string | number | undefined, fallback: numb
 	return n >= 1 && n <= MAX_TURN_CAP_MIN ? n : fallback;
 }
 
+/** Boolish vocabulary for file-config booleans (issue #23): the /agy
+ *  on|off vocabulary plus 0/1 numbers, case/whitespace tolerated. Junk
+ *  falls back to the per-key default and warns instead of being a truthy
+ *  string that silently enables ("digest": "false" used to ENABLE digest).
+ *  null/undefined are absent-like: default silently, no warning. */
+const BOOLISH_TRUE = new Set(["1", "true", "on"]);
+const BOOLISH_FALSE = new Set(["0", "false", "off"]);
+
+export function parseBoolish(raw: unknown): boolean | undefined {
+	if (raw === null || raw === undefined) return undefined;
+	if (typeof raw === "boolean") return raw;
+	if (typeof raw === "number") {
+		if (raw === 0) return false;
+		if (raw === 1) return true;
+		return undefined; // junk number: caller warns
+	}
+	if (typeof raw === "string") {
+		const s = raw.trim().toLowerCase();
+		if (BOOLISH_TRUE.has(s)) return true;
+		if (BOOLISH_FALSE.has(s)) return false;
+		return undefined; // junk string: caller warns
+	}
+	return undefined; // array/object: caller warns
+}
+
+/** Whether a file-config key is absent-like: undefined OR null both mean the
+ *  user did not set it (JSON null ~ absent), so loadConfig falls back to the
+ *  default silently without a parse warning. */
+function keyIsAbsent(raw: unknown): boolean {
+	return raw === undefined || raw === null;
+}
+
+/** Fail-closed variant for the readOnly safety knob: empty string means the
+ *  user explicitly blanked it (off), ANY other set value that is not a
+ *  spelled-out falsity counts as ON, mirroring the AGY_READONLY env grammar.
+ *  Boolish-set values resolve through the vocabulary; junk warns separately
+ *  and fails closed. */
+export function parseReadOnlyValue(raw: unknown): boolean | "junk" | undefined {
+	// env grammar mirrored: empty string = off; every OTHER present value that
+	// is not a spelled-out falsity is ON fail-closed, INCLUDING true/1 - the
+	// intent of a boolish true on a safety knob is on, and junk (unrecognized
+	// strings, non-bool non-0/1 shapes) warns via parseWarnings and fails
+	// closed. undefined/null = absent (caller default).
+	if (raw === "") return false;
+	if (raw === null || raw === undefined) return undefined;
+	if (typeof raw === "boolean") return raw;
+	if (typeof raw === "string") {
+		const s = raw.trim().toLowerCase();
+		if (s === "0" || s === "false" || s === "off") return false;
+		return true; // any other non-blank string: ON (no warning; env grammar)
+	}
+	return "junk"; // numbers (1/0 are env-grammar ON/OFF; file path: call sites pass raw JSON numbers -> treat as junk+warn per the fork's fail-closed test) and other shapes
+}
+
+/** Whether a config.json key is overridden by an env var, so loadConfig
+ *  never parses (nor warns about) a file value the env would discard. */
+function envOverrides(key: keyof AgyConfig): boolean {
+	const envs: Partial<Record<keyof AgyConfig, string | undefined>> = {
+		skipPermissions: process.env.AGY_SKIP_PERMISSIONS,
+		readOnly: process.env.AGY_READONLY,
+		askTool: process.env.AGY_ASK_TOOL,
+		webTools: process.env.AGY_WEB_TOOLS,
+		digest: process.env.AGY_DIGEST,
+		systemPrompt: process.env.AGY_SYSTEM_PROMPT,
+	};
+	return envs[key] !== undefined;
+}
+
+/** Compose the startup warning message for a hand-edited config.json whose
+ *  boolean/enum fields could not be parsed (issue #23). Shared by
+ *  notifyConfigWarnings and tests. Line format is emitted per parsed key by
+ *  the parse sites; this wrapper names the problem and the /agy doctor
+ *  escape hatch. */
+export function configWarningsMessage(warnings: readonly string[]): string {
+	const n = warnings.length;
+	const head = n === 1 ? "1 unparseable value" : `${n} unparseable values`;
+	return `config warnings: ${head} in config.json (defaults used; run /agy doctor for details): ${warnings.join(", ")}`;
+}
+
 /** Read the raw config file (no defaults, no env). Shared by loadConfig and
  *  saveConfig so persisted writes can never bake env overrides into the file. */
 function readConfigFile(configPath: string): Partial<AgyConfig> {
@@ -267,8 +351,20 @@ function readConfigFile(configPath: string): Partial<AgyConfig> {
 	return {};
 }
 
-/** Load config merged over defaults. Env vars override the file when set. */
+/** Load config merged over defaults. Env vars override the file when set.
+ *  File booleans parse through the boolish vocabulary (issue #23); junk
+ *  values fall back to the safe default and collect a parse warning that
+ *  surfaces at startup (notifyConfigWarnings) instead of silently changing
+ *  behavior - the truthy-string bug class: "digest": "false" used to
+ *  ENABLE digest. */
 export function loadConfig(configPath: string = defaultConfigPath()): AgyConfig {
+	const seenWarnings = new Set<string>();
+	const parseWarnings: string[] = [];
+	const warnParse = (key: string): void => {
+		if (seenWarnings.has(key)) return;
+		seenWarnings.add(key);
+		parseWarnings.push(key);
+	};
 	let file: Partial<AgyConfig> = readConfigFile(configPath);
 
 	// Env overrides file (matches the skipPermissions pattern).
@@ -286,7 +382,16 @@ export function loadConfig(configPath: string = defaultConfigPath()): AgyConfig 
 	const freshInstall = !fs.existsSync(configPath);
 	const engineFallback = freshInstall || file.engine !== undefined ? DEFAULT_ENGINE : "stream-json";
 	const engine = narrowEngine(String(process.env.AGY_ENGINE ?? file.engine ?? engineFallback).toLowerCase());
+	// Non-string engine (hand-edit 7): narrow via String in the same call.
+	if (file.engine !== undefined && typeof file.engine !== "string" && !envOverrides("engine")) warnParse("engine");
+	if (typeof file.agent !== "undefined" && typeof file.agent !== "string") warnParse("agent");
+	if (file.approvals !== undefined && typeof file.approvals === "object" && file.approvals !== null) {
+		for (const [k, v] of Object.entries(file.approvals as unknown as Record<string, unknown>)) {
+			if (v !== undefined && typeof v !== "string") parseWarnings.push(`approvals.${k}`);
+		}
+	}
 
+	if (file.mode !== undefined && typeof file.mode !== "string") warnParse("mode");
 	const mode: AgyMode =
 		process.env.AGY_MODE !== undefined
 			? process.env.AGY_MODE === "plan"
@@ -297,29 +402,46 @@ export function loadConfig(configPath: string = defaultConfigPath()): AgyConfig 
 				: "accept-edits";
 
 	const envPerm = process.env.AGY_SKIP_PERMISSIONS;
-	const skipPermissions =
-		envPerm !== undefined
-			? envPerm === "1" || envPerm.toLowerCase() === "true"
-			: file.skipPermissions ?? DEFAULTS.skipPermissions;
+	const skipPermissions = envPerm !== undefined
+		? envPerm === "1" || envPerm.toLowerCase() === "true"
+		: (() => {
+			if (envOverrides("skipPermissions")) return DEFAULTS.skipPermissions;
+			const b = parseBoolish(file.skipPermissions);
+			if (b === undefined && !keyIsAbsent(file.skipPermissions)) warnParse("skipPermissions");
+			return b ?? DEFAULTS.skipPermissions;
+		})();
 
 	const envReadOnly = process.env.AGY_READONLY;
 	// Fail-closed parse for a safety knob: empty string means the user
 	// explicitly blanked it (off), but ANY other set value that is not a
 	// spelled-out falsity counts as ON. " 1", "yes", typos: all refuse.
-	const readOnly =
-		envReadOnly !== undefined
-			? envReadOnly === ""
-				? false
-				: !["0", "false", "off"].includes(envReadOnly.trim().toLowerCase())
-			: file.readOnly ?? DEFAULTS.readOnly;
+	// The FILE path parses through the fail-closed variant: boolish vocabulary
+	// resolves; junk fails closed and warns (issue #23) instead of trusting.
+	const readOnly = envReadOnly !== undefined
+		? envReadOnly === ""
+			? false
+			: !["0", "false", "off"].includes(envReadOnly.trim().toLowerCase())
+		: (() => {
+			if (envOverrides("readOnly")) return DEFAULTS.readOnly;
+			const parsed = parseReadOnlyValue(file.readOnly);
+			if (parsed === "junk" && !keyIsAbsent(file.readOnly)) {
+				warnParse("readOnly");
+				return true as const; // fail closed
+			}
+			return (parsed ?? DEFAULTS.readOnly) as boolean;
+		})();
 
 	const defaultModelRaw =
 		process.env.AGY_DEFAULT_MODEL ?? file.defaultModel ?? DEFAULTS.defaultModel;
-	const defaultModel =
-		typeof defaultModelRaw === "string" ? defaultModelRaw.trim() || DEFAULTS.defaultModel : DEFAULTS.defaultModel;
+	const defaultModel: string =
+		typeof defaultModelRaw === "string"
+			? defaultModelRaw.trim() || DEFAULTS.defaultModel
+			: (warnParse("defaultModel"), DEFAULTS.defaultModel as string);
 
 	const envThink = process.env.AGY_DEFAULT_THINKING;
-	const thinkRaw = (envThink ?? file.defaultThinking ?? DEFAULTS.defaultThinking).toLowerCase();
+	const thinkSrc: unknown = envThink ?? file.defaultThinking ?? DEFAULTS.defaultThinking;
+	if (typeof thinkSrc !== "string") warnParse("defaultThinking");
+	const thinkRaw = String(thinkSrc).toLowerCase();
 	// agy's own tier vocabulary, inlined (same values as models.ts
 	// AGY_EFFORT_ORDER) to keep config.ts models-import-free. A tier agy has no
 	// equivalent for (pi's max, a typo) falls back to the balanced default.
@@ -329,13 +451,26 @@ export function loadConfig(configPath: string = defaultConfigPath()): AgyConfig 
 
 	const askTool = process.env.AGY_ASK_TOOL !== undefined
 		? ["1", "true", "on"].includes(process.env.AGY_ASK_TOOL.toLowerCase())
-		: file.askTool ?? DEFAULTS.askTool;
+		: envOverrides("askTool") ? (undefined as unknown as boolean)
+		: (() => {
+			if (envOverrides("askTool")) return DEFAULTS.askTool;
+			const b = parseBoolish(file.askTool);
+			if (b === undefined && !keyIsAbsent(file.askTool)) warnParse("askTool");
+			return b ?? DEFAULTS.askTool;
+		})();
 
 	const webTools = process.env.AGY_WEB_TOOLS !== undefined
 		? ["1", "true", "on"].includes(process.env.AGY_WEB_TOOLS.toLowerCase())
-		: file.webTools ?? DEFAULTS.webTools;
+		: (() => {
+			if (envOverrides("webTools")) return DEFAULTS.webTools;
+			const b = parseBoolish(file.webTools);
+			if (b === undefined && !keyIsAbsent(file.webTools)) warnParse("webTools");
+			return b ?? DEFAULTS.webTools;
+		})();
 
-	const bridgeRaw = (process.env.AGY_BRIDGE_TOOLS ?? file.bridgeTools ?? DEFAULTS.bridgeTools).toLowerCase();
+	const bridgeSrc: unknown = process.env.AGY_BRIDGE_TOOLS ?? file.bridgeTools ?? DEFAULTS.bridgeTools;
+	if (typeof bridgeSrc !== "string" && !envOverrides("bridgeTools")) warnParse("bridgeTools");
+	const bridgeRaw = String(bridgeSrc).toLowerCase();
 	const bridgeTools: BridgeTools =
 		bridgeRaw === "none" || bridgeRaw === "all" || bridgeRaw === "mcp"
 			? bridgeRaw
@@ -357,12 +492,22 @@ export function loadConfig(configPath: string = defaultConfigPath()): AgyConfig 
 
 	const digest = process.env.AGY_DIGEST !== undefined
 		? ["1", "true", "on"].includes(process.env.AGY_DIGEST.toLowerCase())
-		: file.digest ?? true;
+		: (() => {
+			if (envOverrides("digest")) return DEFAULTS.digest;
+			const b = parseBoolish(file.digest);
+			if (b === undefined && !keyIsAbsent(file.digest)) warnParse("digest");
+			return b ?? DEFAULTS.digest;
+		})();
 
 	const envSys = process.env.AGY_SYSTEM_PROMPT;
 	const systemPrompt = envSys !== undefined
 		? ["1", "true", "on"].includes(envSys.toLowerCase())
-		: file.systemPrompt ?? DEFAULTS.systemPrompt;
+		: (() => {
+			if (envOverrides("systemPrompt")) return DEFAULTS.systemPrompt;
+			const b = parseBoolish(file.systemPrompt);
+			if (b === undefined && !keyIsAbsent(file.systemPrompt)) warnParse("systemPrompt");
+			return b ?? DEFAULTS.systemPrompt;
+		})();
 
 	// Turn caps, minutes. Env wins over the file (same pattern as mode).
 	const turnTimeoutMin = parseCapMinutes(
@@ -376,12 +521,16 @@ export function loadConfig(configPath: string = defaultConfigPath()): AgyConfig 
 
 	// Approval gate. Unknown values fall back to "auto"
 	// so a typo can never silently force the gate on.
-	const gateRaw = (process.env.AGY_APPROVALS ?? file.approvals?.gateMode ?? DEFAULTS.approvals.gateMode).toLowerCase();
+	const gateSrc: unknown = process.env.AGY_APPROVALS ?? file.approvals?.gateMode ?? DEFAULTS.approvals.gateMode;
+	if (typeof gateSrc !== "string") warnParse("approvals.gateMode");
+	const gateRaw = String(gateSrc).toLowerCase();
 	const gateMode: GateMode =
 		gateRaw === "shadow" || gateRaw === "dedicated" || gateRaw === "off"
 			? gateRaw
 			: "auto";
-	const askRaw = (process.env.AGY_APPROVALS_MODE ?? file.approvals?.mode ?? DEFAULTS.approvals.mode).toLowerCase();
+	const askSrc: unknown = process.env.AGY_APPROVALS_MODE ?? file.approvals?.mode ?? DEFAULTS.approvals.mode;
+	if (typeof askSrc !== "string") warnParse("approvals.mode");
+	const askRaw = String(askSrc).toLowerCase();
 	const gateAskMode: GateAskMode =
 		askRaw === "allow" || askRaw === "deny"
 			? askRaw
@@ -404,8 +553,11 @@ export function loadConfig(configPath: string = defaultConfigPath()): AgyConfig 
 
 	// Custom agent for stream-json turns (--agent). Env wins over the file
 	// (same pattern as mode). Normalized (trim/cap/control-strip); an empty
-	// result means agy's default agent.
-	const agent = normalizeAgyAgentName(process.env.AGY_AGENT ?? file.agent);
+	// result means agy's default agent. Non-string junk warns and drops
+	// (issue #23 review hardening).
+	const agentRaw: unknown = process.env.AGY_AGENT ?? file.agent;
+	if (typeof agentRaw !== "undefined" && typeof agentRaw !== "string") warnParse("agent");
+	const agent = typeof agentRaw === "string" ? normalizeAgyAgentName(agentRaw) : undefined;
 
 	return {
 		engine,
@@ -426,6 +578,7 @@ export function loadConfig(configPath: string = defaultConfigPath()): AgyConfig 
 		agent,
 		approvals: { gateMode, mode: gateAskMode },
 		patchCleanupNotified: file.patchCleanupNotified === true,
+		...(parseWarnings.length ? { parseWarnings: Object.freeze(parseWarnings) } : {}),
 	};
 }
 
@@ -469,6 +622,11 @@ export function saveConfig(patch: Partial<AgyConfig>, configPath: string = defau
 		...patch,
 		engine: narrowEngine(String(persistedEngine).toLowerCase()),
 	};
+	// parseWarnings is loadConfig's in-memory field: never persisted (a hand
+	// editor's junk value stays exactly as written on disk). A raw file that
+	// carried a stale parseWarnings key must not round-trip either.
+	const persisted = next as Partial<AgyConfig> & { parseWarnings?: readonly string[] };
+	delete persisted.parseWarnings;
 	const dir = path.dirname(configPath);
 	fs.mkdirSync(dir, { recursive: true });
 	const tmp = `${configPath}.${process.pid}.tmp`;
